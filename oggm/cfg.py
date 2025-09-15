@@ -257,9 +257,7 @@ BASENAMES['climate_historical'] = ('climate_historical.nc', _doc)
 
 # so far, this is only ERA5 or E5E5 daily and does not work with the default
 # OGGM mass balance module, only with sandbox
-_doc = ('The historical daily climate timeseries stored in a netCDF file.'
-        '(only temperature is really changing on daily basis,'
-        'precipitation is just assumed constant for every day')
+_doc = 'The historical daily climate timeseries stored in a netCDF file.'
 BASENAMES['climate_historical_daily'] = ('climate_historical_daily.nc', _doc)
 
 _doc = "A dict containing the glacier's mass balance calibration parameters."
@@ -300,6 +298,12 @@ BASENAMES['elevation_band_flowline'] = ('elevation_band_flowline.csv', _doc)
 
 _doc = "The outlines of this glacier complex sub-entities (for RGI7C only!)."
 BASENAMES['complex_sub_entities'] = ('complex_sub_entities.shp', _doc)
+
+_doc = "A dict containing all settings used during the OGGM workflow."
+BASENAMES['settings'] = ('settings.yml', _doc)
+
+_doc = "A dict containing all observations used during the OGGM workflow."
+BASENAMES['observations'] = ('observations.yml', _doc)
 
 
 def set_logging_config(logging_level='INFO'):

@@ -1011,6 +1011,8 @@ class TestElevationBandFlowlines(unittest.TestCase):
             assert ds.volume_m3[-1] < ds.volume_m3[0]
             assert ds.length_m[-1] < ds.length_m[0]
 
+        assert 'ref_mb' in gdir.observations
+
 
 class TestGeometry(unittest.TestCase):
 
@@ -1438,10 +1440,16 @@ class TestClimate(unittest.TestCase):
         ref_mb = mbdf.ANNUAL_BALANCE.mean()
         ref_period = f'{mbdf.index[0]}-01-01_{mbdf.index[-1] + 1}-01-01'
 
+        # this function cleanes the observations file before each test
+        def reset_observation_file(gdir):
+            gdir.observations.data.pop('ref_mb', None)
+            gdir.observations._save()
+
         # Default is to calibrate melt_f
+        reset_observation_file(gdir)
         mb_calibration_from_scalar_mb(gdir,
                                       ref_mb=ref_mb,
-                                      ref_period=ref_period)
+                                      ref_mb_period=ref_period)
 
         h, w = gdir.get_inversion_flowline_hw()
         mb_new = massbalance.MonthlyTIModel(gdir)
@@ -1453,15 +1461,16 @@ class TestClimate(unittest.TestCase):
         np.testing.assert_allclose(1, mbdf[['ref_mb', 'melt_mb']].corr(),
                                    atol=0.35)
 
-        pdf = gdir.read_json('mb_calib')
+        pdf = gdir.read_yml('settings')
         assert pdf['temp_bias'] == 0
         assert pdf['melt_f'] != cfg.PARAMS['melt_f']
         assert pdf['prcp_fac'] == cfg.PARAMS['prcp_fac']
 
         # Let's calibrate on temp_bias
+        reset_observation_file(gdir)
         mb_calibration_from_scalar_mb(gdir,
                                       ref_mb=ref_mb,
-                                      ref_period=ref_period,
+                                      ref_mb_period=ref_period,
                                       calibrate_param1='temp_bias')
 
         mb_new = massbalance.MonthlyTIModel(gdir)
@@ -1473,15 +1482,16 @@ class TestClimate(unittest.TestCase):
         np.testing.assert_allclose(1, mbdf[['ref_mb', 'temp_mb']].corr(),
                                    atol=0.35)
 
-        pdf = gdir.read_json('mb_calib')
+        pdf = gdir.read_yml('settings')
         assert pdf['temp_bias'] != 0
         assert pdf['melt_f'] == cfg.PARAMS['melt_f']
         assert pdf['prcp_fac'] == cfg.PARAMS['prcp_fac']
 
         # Let's calibrate on precip
+        reset_observation_file(gdir)
         mb_calibration_from_scalar_mb(gdir,
                                       ref_mb=ref_mb,
-                                      ref_period=ref_period,
+                                      ref_mb_period=ref_period,
                                       calibrate_param1='prcp_fac')
 
         mb_new = massbalance.MonthlyTIModel(gdir)
@@ -1493,7 +1503,7 @@ class TestClimate(unittest.TestCase):
         np.testing.assert_allclose(1, mbdf[['ref_mb', 'prcp_mb']].corr(),
                                    atol=0.35)
 
-        pdf = gdir.read_json('mb_calib')
+        pdf = gdir.read_yml('settings')
         assert pdf['temp_bias'] == 0
         assert pdf['melt_f'] == cfg.PARAMS['melt_f']
         assert pdf['prcp_fac'] != cfg.PARAMS['prcp_fac']
@@ -1505,12 +1515,14 @@ class TestClimate(unittest.TestCase):
         # Very positive
         ref_mb = 2000
         with pytest.raises(RuntimeError):
+            reset_observation_file(gdir)
             mb_calibration_from_scalar_mb(gdir,
                                           ref_mb=ref_mb,
-                                          ref_period=ref_period)
+                                          ref_mb_period=ref_period)
+        reset_observation_file(gdir)
         mb_calibration_from_scalar_mb(gdir,
                                       ref_mb=ref_mb,
-                                      ref_period=ref_period,
+                                      ref_mb_period=ref_period,
                                       calibrate_param2='temp_bias')
 
         mb_new = massbalance.MonthlyTIModel(gdir)
@@ -1522,7 +1534,7 @@ class TestClimate(unittest.TestCase):
         np.testing.assert_allclose(1, mbdf[['ref_mb', 'melt_mb2']].corr(),
                                    atol=0.55)
 
-        pdf = gdir.read_json('mb_calib')
+        pdf = gdir.read_yml('settings')
         assert pdf['temp_bias'] < 0
         assert pdf['melt_f'] != cfg.PARAMS['melt_f']
         assert pdf['melt_f'] == cfg.PARAMS['melt_f_min']
@@ -1531,12 +1543,14 @@ class TestClimate(unittest.TestCase):
         # Very negative
         ref_mb = -10000
         with pytest.raises(RuntimeError):
+            reset_observation_file(gdir)
             mb_calibration_from_scalar_mb(gdir,
                                           ref_mb=ref_mb,
-                                          ref_period=ref_period)
+                                          ref_mb_period=ref_period)
+        reset_observation_file(gdir)
         mb_calibration_from_scalar_mb(gdir,
                                       ref_mb=ref_mb,
-                                      ref_period=ref_period,
+                                      ref_mb_period=ref_period,
                                       calibrate_param2='temp_bias')
 
         mb_new = massbalance.MonthlyTIModel(gdir)
@@ -1548,7 +1562,7 @@ class TestClimate(unittest.TestCase):
         np.testing.assert_allclose(1, mbdf[['ref_mb', 'melt_mb2']].corr(),
                                    atol=0.5)
 
-        pdf = gdir.read_json('mb_calib')
+        pdf = gdir.read_yml('settings')
         assert pdf['temp_bias'] > 0
         assert pdf['melt_f'] != cfg.PARAMS['melt_f']
         assert pdf['melt_f'] == cfg.PARAMS['melt_f_max']
@@ -1558,13 +1572,15 @@ class TestClimate(unittest.TestCase):
         # Very positive
         ref_mb = 3000
         with pytest.raises(RuntimeError):
+            reset_observation_file(gdir)
             mb_calibration_from_scalar_mb(gdir,
                                           ref_mb=ref_mb,
-                                          ref_period=ref_period,
+                                          ref_mb_period=ref_period,
                                           calibrate_param1='prcp_fac')
+        reset_observation_file(gdir)
         mb_calibration_from_scalar_mb(gdir,
                                       ref_mb=ref_mb,
-                                      ref_period=ref_period,
+                                      ref_mb_period=ref_period,
                                       calibrate_param1='prcp_fac',
                                       calibrate_param2='temp_bias')
 
@@ -1577,7 +1593,7 @@ class TestClimate(unittest.TestCase):
         np.testing.assert_allclose(1, mbdf[['ref_mb', 'melt_mb2']].corr(),
                                    atol=0.45)
 
-        pdf = gdir.read_json('mb_calib')
+        pdf = gdir.read_yml('settings')
         assert pdf['temp_bias'] < 0
         assert pdf['melt_f'] == cfg.PARAMS['melt_f']
         assert pdf['prcp_fac'] > cfg.PARAMS['prcp_fac']
@@ -1585,13 +1601,15 @@ class TestClimate(unittest.TestCase):
         # Very negative
         ref_mb = -10000
         with pytest.raises(RuntimeError):
+            reset_observation_file(gdir)
             mb_calibration_from_scalar_mb(gdir,
                                           ref_mb=ref_mb,
-                                          ref_period=ref_period,
+                                          ref_mb_period=ref_period,
                                           calibrate_param1='prcp_fac')
+        reset_observation_file(gdir)
         mb_calibration_from_scalar_mb(gdir,
                                       ref_mb=ref_mb,
-                                      ref_period=ref_period,
+                                      ref_mb_period=ref_period,
                                       calibrate_param1='prcp_fac',
                                       calibrate_param2='temp_bias')
 
@@ -1604,7 +1622,7 @@ class TestClimate(unittest.TestCase):
         np.testing.assert_allclose(1, mbdf[['ref_mb', 'melt_mb2']].corr(),
                                    atol=0.5)
 
-        pdf = gdir.read_json('mb_calib')
+        pdf = gdir.read_yml('settings')
         assert pdf['temp_bias'] > 0
         assert pdf['melt_f'] == cfg.PARAMS['melt_f']
         assert pdf['prcp_fac'] < cfg.PARAMS['prcp_fac']
@@ -1612,21 +1630,24 @@ class TestClimate(unittest.TestCase):
         # Extremely negative
         ref_mb = -20000
         with pytest.raises(RuntimeError):
+            reset_observation_file(gdir)
             mb_calibration_from_scalar_mb(gdir,
                                           ref_mb=ref_mb,
-                                          ref_period=ref_period,
+                                          ref_mb_period=ref_period,
                                           calibrate_param1='prcp_fac')
 
         with pytest.raises(RuntimeError):
+            reset_observation_file(gdir)
             mb_calibration_from_scalar_mb(gdir,
                                           ref_mb=ref_mb,
-                                          ref_period=ref_period,
+                                          ref_mb_period=ref_period,
                                           calibrate_param1='prcp_fac',
                                           calibrate_param2='temp_bias')
 
+        reset_observation_file(gdir)
         mb_calibration_from_scalar_mb(gdir,
                                       ref_mb=ref_mb,
-                                      ref_period=ref_period,
+                                      ref_mb_period=ref_period,
                                       calibrate_param1='prcp_fac',
                                       calibrate_param2='temp_bias',
                                       calibrate_param3='melt_f')
@@ -1640,7 +1661,7 @@ class TestClimate(unittest.TestCase):
         np.testing.assert_allclose(1, mbdf[['ref_mb', 'melt_mb3']].corr(),
                                    atol=0.5)
 
-        pdf = gdir.read_json('mb_calib')
+        pdf = gdir.read_yml('settings')
         assert pdf['temp_bias'] == cfg.PARAMS['temp_bias_max']
         assert pdf['melt_f'] > cfg.PARAMS['melt_f']
         assert pdf['prcp_fac'] == cfg.PARAMS['prcp_fac_min']
@@ -1648,35 +1669,39 @@ class TestClimate(unittest.TestCase):
         # Unmatchable positive
         ref_mb = 10000
         with pytest.raises(RuntimeError):
+            reset_observation_file(gdir)
             mb_calibration_from_scalar_mb(gdir,
                                           ref_mb=ref_mb,
-                                          ref_period=ref_period,
+                                          ref_mb_period=ref_period,
                                           calibrate_param1='prcp_fac',
                                           calibrate_param2='temp_bias',
                                           calibrate_param3='melt_f')
 
         # Matchable positive with less range
         ref_mb = 1000
-        cfg.PARAMS['temp_bias_min'] = -0.5
-        cfg.PARAMS['temp_bias_max'] = 0.5
-        cfg.PARAMS['prcp_fac_min'] = 2
-        cfg.PARAMS['prcp_fac_max'] = 3
+        gdir.settings['temp_bias_min'] = -0.5
+        gdir.settings['temp_bias_max'] = 0.5
+        gdir.settings['prcp_fac_min'] = 2
+        gdir.settings['prcp_fac_max'] = 3
         with pytest.raises(RuntimeError):
+            reset_observation_file(gdir)
             mb_calibration_from_scalar_mb(gdir,
                                           ref_mb=ref_mb,
-                                          ref_period=ref_period,
+                                          ref_mb_period=ref_period,
                                           calibrate_param1='prcp_fac')
 
         with pytest.raises(RuntimeError):
+            reset_observation_file(gdir)
             mb_calibration_from_scalar_mb(gdir,
                                           ref_mb=ref_mb,
-                                          ref_period=ref_period,
+                                          ref_mb_period=ref_period,
                                           calibrate_param1='prcp_fac',
                                           calibrate_param2='temp_bias')
 
+        reset_observation_file(gdir)
         mb_calibration_from_scalar_mb(gdir,
                                       ref_mb=ref_mb,
-                                      ref_period=ref_period,
+                                      ref_mb_period=ref_period,
                                       calibrate_param1='prcp_fac',
                                       calibrate_param2='temp_bias',
                                       calibrate_param3='melt_f')
@@ -1690,36 +1715,38 @@ class TestClimate(unittest.TestCase):
         np.testing.assert_allclose(1, mbdf[['ref_mb', 'melt_mb3']].corr(),
                                    atol=0.5)
 
-        pdf = gdir.read_json('mb_calib')
-        assert pdf['temp_bias'] == cfg.PARAMS['temp_bias_min']
+        pdf = gdir.read_yml('settings')
+        assert pdf['temp_bias'] == gdir.settings['temp_bias_min']
         assert pdf['melt_f'] < cfg.PARAMS['melt_f']
-        assert pdf['prcp_fac'] == cfg.PARAMS['prcp_fac_max']
+        assert pdf['prcp_fac'] == gdir.settings['prcp_fac_max']
 
         # Test perturbate
         massbalance.perturbate_mb_params(gdir, perturbation={'temp_bias': -1,
                                                              'prcp_fac': 2})
-        pdf = gdir.read_json('mb_calib')
-        assert pdf['temp_bias'] == cfg.PARAMS['temp_bias_min'] - 1
-        assert pdf['prcp_fac'] == cfg.PARAMS['prcp_fac_max'] * 2
+        pdf = gdir.read_yml('settings')
+        assert pdf['temp_bias'] == gdir.settings['temp_bias_min'] - 1
+        assert pdf['prcp_fac'] == gdir.settings['prcp_fac_max'] * 2
 
         massbalance.perturbate_mb_params(gdir, reset_default=True)
-        pdf = gdir.read_json('mb_calib')
-        assert pdf['temp_bias'] == cfg.PARAMS['temp_bias_min']
+        pdf = gdir.read_yml('settings')
+        assert pdf['temp_bias'] == gdir.settings['temp_bias_min']
         assert pdf['melt_f'] < cfg.PARAMS['melt_f']
-        assert pdf['prcp_fac'] == cfg.PARAMS['prcp_fac_max']
+        assert pdf['prcp_fac'] == gdir.settings['prcp_fac_max']
 
         # Test the use of gridded data(2D) instead of flowline data(1D) for the calibration
+        reset_observation_file(gdir)
         mb_calibration_from_scalar_mb(gdir,
                                       ref_mb=ref_mb,
-                                      ref_period=ref_period,
+                                      ref_mb_period=ref_period,
                                       use_2d_mb=False)
-        mb_calib_1d = gdir.read_json('mb_calib')
+        mb_calib_1d = gdir.read_yml('settings')
 
+        reset_observation_file(gdir)
         mb_calibration_from_scalar_mb(gdir,
                                       ref_mb=ref_mb,
-                                      ref_period=ref_period,
+                                      ref_mb_period=ref_period,
                                       use_2d_mb=True)
-        mb_calib_2d = gdir.read_json('mb_calib')
+        mb_calib_2d = gdir.read_yml('settings')
         # the calibration results for the melt factor should be close to each other (+/- 5% are tolerated)
         np.testing.assert_allclose(mb_calib_2d['melt_f'], mb_calib_1d['melt_f'], rtol=0.05)
 
@@ -1748,7 +1775,7 @@ class TestClimate(unittest.TestCase):
         mbdf['ref_mb'] = mbdf['ANNUAL_BALANCE']
         ref_mb = mbdf.ref_mb.mean()
         ref_period = f'{mbdf.index[0]}-01-01_{mbdf.index[-1] + 1}-01-01'
-        mb_calibration_from_scalar_mb(gdir, ref_mb=ref_mb, ref_period=ref_period)
+        mb_calibration_from_scalar_mb(gdir, ref_mb=ref_mb, ref_mb_period=ref_period)
         mb_new = massbalance.MonthlyTIModel(gdir)
 
         h, w = gdir.get_inversion_flowline_hw()
@@ -1772,7 +1799,7 @@ class TestClimate(unittest.TestCase):
         gdir.write_pickle(fls, 'inversion_flowlines')
 
         mb_calibration_from_scalar_mb(gdir, ref_mb=ref_mb,
-                                        ref_period=ref_period)
+                                      ref_mb_period=ref_period)
         mb_new = massbalance.MultipleFlowlineMassBalance(gdir,
                                                          use_inversion_flowlines=True)
 
@@ -1997,10 +2024,12 @@ class TestInversion(unittest.TestCase):
         # Make it fail
         with pytest.raises(ValueError):
             a = (0.1, 3)
+            gdir.settings['inversion_glen_a'] = cfg.PARAMS['inversion_glen_a']
             workflow.calibrate_inversion_from_consensus(gdir,
                                                         a_bounds=a)
 
         a = (0.1, 5)
+        gdir.settings['inversion_glen_a'] = cfg.PARAMS['inversion_glen_a']
         df = workflow.calibrate_inversion_from_consensus(gdir,
                                                          a_bounds=a,
                                                          error_on_mismatch=False)
@@ -2008,7 +2037,9 @@ class TestInversion(unittest.TestCase):
 
         # With fs it can work
         a = (0.1, 3)
+        gdir.settings['inversion_glen_a'] = cfg.PARAMS['inversion_glen_a']
         df = workflow.calibrate_inversion_from_consensus(gdir,
+                                                         overwrite_observations=True,
                                                          a_bounds=a,
                                                          apply_fs_on_mismatch=True)
         np.testing.assert_allclose(df.vol_itmix_m3, df.vol_oggm_m3, rtol=0.01)
@@ -2031,8 +2062,8 @@ class TestInversion(unittest.TestCase):
         massbalance.mb_calibration_from_wgms_mb(gdir)
         massbalance.apparent_mb_from_any_mb(gdir, mb_years=(1953, 2002))
 
-        cfg.PARAMS['inversion_fs'] = 5.7e-20
-        cfg.PARAMS['inversion_glen_a'] = 2.4e-24
+        gdir.settings['inversion_fs'] = 5.7e-20
+        gdir.settings['inversion_glen_a'] = 2.4e-24
 
         inversion.prepare_for_inversion(gdir,
                                         invert_with_rectangular=False,
@@ -2042,7 +2073,7 @@ class TestInversion(unittest.TestCase):
         inversion.prepare_for_inversion(gdir, invert_all_trapezoid=True)
         vt1 = inversion.mass_conservation_inversion(gdir)
 
-        cfg.PARAMS['trapezoid_lambdas'] = 1
+        gdir.settings['trapezoid_lambdas'] = 1
         inversion.prepare_for_inversion(gdir, invert_all_trapezoid=True)
         vt2 = inversion.mass_conservation_inversion(gdir)
 
@@ -2428,7 +2459,7 @@ class TestCoxeCalving(unittest.TestCase):
         centerlines.catchment_width_geom(gdir)
         centerlines.catchment_width_correction(gdir)
         tasks.process_dummy_cru_file(gdir, seed=0)
-        massbalance.mb_calibration_from_geodetic_mb(gdir)
+        massbalance.mb_calibration_from_hugonnet_mb(gdir)
         massbalance.apparent_mb_from_any_mb(gdir)
 
         inversion.prepare_for_inversion(gdir)
@@ -2487,7 +2518,7 @@ class TestCoxeCalving(unittest.TestCase):
         centerlines.catchment_width_geom(gdir)
         centerlines.catchment_width_correction(gdir)
         tasks.process_dummy_cru_file(gdir, seed=0)
-        massbalance.mb_calibration_from_geodetic_mb(gdir)
+        massbalance.mb_calibration_from_hugonnet_mb(gdir)
         massbalance.apparent_mb_from_any_mb(gdir)
         inversion.find_inversion_calving_from_any_mb(gdir)
 
