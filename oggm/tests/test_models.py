@@ -583,6 +583,8 @@ class TestMassBalanceModels:
             - ref_hgt: 3160.0
             - ys: 1802
             - ye: 2002
+            - ys_float: 1802.0
+            - ye_float: 2002.9150684931508
         """)
         mb_mod = massbalance.MonthlyTIModel(hef_gdir, bias=0)
         assert mb_mod.__repr__() == expected
@@ -615,6 +617,8 @@ class TestMassBalanceModels:
             - ref_hgt: 2252.0
             - ys: 1901
             - ye: 2019
+            - ys_float: 1901.0
+            - ye_float: 2019.9972602739726
         """
                           )
         ModelSettings(hef_gdir, filesuffix='_daily', parent_filesuffix='')

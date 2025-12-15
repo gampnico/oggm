@@ -651,6 +651,10 @@ class MonthlyTIModel(MassBalanceModel):
             self.climate_source = nc.climate_source
             self.ys = self.years[0]
             self.ye = self.years[-1]
+            self.ys_float = date_to_floatyear(self.years[0], self.months[0],
+                                              self.days[0])
+            self.ye_float = date_to_floatyear(self.years[-1], self.months[-1],
+                                              self.days[-1])
 
     def __repr__(self):
         """String Representation of the mass balance model"""
@@ -756,7 +760,7 @@ class MonthlyTIModel(MassBalanceModel):
         bool
             True if the year is within the climate period.
         """
-        return self.ys <= year <= self.ye
+        return self.ys_float <= year <= self.ye_float
 
     def validate_year(self, year: int) -> int:
         """Get and validate if a year is outside the data's time range.
@@ -771,7 +775,7 @@ class MonthlyTIModel(MassBalanceModel):
         if not self.is_year_valid(year):  # this is overloaded by subclasses
             raise ValueError(
                 f'year {year} out of the valid time bounds: '
-                f'[{self.ys}, {self.ye}]'
+                f'[{self.ys_float}, {self.ye_float}]'
             )
         return year
 
@@ -3762,7 +3766,7 @@ def mb_calibration_from_scalar_mb(gdir, *,
     for y in years:
         if not mb_mod.is_year_valid(y):
             raise ValueError(f'year {y} out of the valid time bounds: '
-                             f'[{mb_mod.ys}, {mb_mod.ye}]')
+                             f'[{mb_mod.ys_float}, {mb_mod.ye_float}]')
 
     if calibrate_param1 == 'melt_f':
         min_range, max_range = melt_f_min, melt_f_max
