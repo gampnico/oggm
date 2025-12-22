@@ -1179,7 +1179,7 @@ class DailyTIModel(MonthlyTIModel):
             Temperatures, melt temperatures, total precipitation, and
             solid precipitation.
         """
-        y, m, d = floatyear_to_date(year, months_only=False)
+        y, m, d = floatyear_to_date(year, return_day=True)
         y = self.validate_year(year=y)
         pok = np.where((self.years == y) &
                        (self.months == m) &
@@ -1453,6 +1453,8 @@ class SfcTypeTIModel(MassBalanceModel):
         self.input_filesuffix = self.mbmod.input_filesuffix
         self.hemisphere = self.mbmod.hemisphere
         self.bias = self.mbmod.bias
+        self.ys = self.mbmod.ys
+        self.ye = self.mbmod.ye
 
         # check compatibility of aging_frequency and climate_resolution: aging
         # can not happen at higher temporal resolution than the climate steps
@@ -1545,9 +1547,6 @@ class SfcTypeTIModel(MassBalanceModel):
         # set a template for an empty bucket and mb containers
         self._empty_mb_buckets_np = np.zeros((len(self.buckets_grid_point_label),
                                               len(self.buckets)))
-        self._empty_smb_pd = pd.DataFrame(
-            0, index=self.buckets_grid_point_label, columns=[]
-        )
 
         # stuff related to varying melt_f for each bucket
         self.tau_e = tau_e
@@ -1581,9 +1580,30 @@ class SfcTypeTIModel(MassBalanceModel):
     def _init_buckets(self):
         # reset some containers for a fresh start
         self.mb_buckets_np = self._empty_mb_buckets_np.copy()  # kg m-2
-        self._climatic_mb = {}  # kg m-2
-        self._ice_mb = {}  # kg m-2
-        self._mb_heights = {}  # m
+        # define length of needed timesteps
+        first_year = self.ys
+        if self.save_spinup_mbs:
+            first_year -= self.spinup_years
+        if self.climate_resolution == 'annual':
+            self.nr_timesteps = len(range(first_year, self.ye + 1))
+        elif self.climate_resolution == 'monthly':
+            self.nr_timesteps = len(float_years_timeseries(
+                y0=first_year, y1=self.ye, include_last_year=True, ))
+        elif self.climate_resolution == 'daily':
+            self.nr_timesteps = len(float_years_timeseries(
+                y0=first_year, y1=self.ye, include_last_year=True,
+                daily=True))
+        else:
+            raise NotImplementedError(
+                f"climate_resolution {self.climate_resolution}")
+
+        output_shape = (self.nr_timesteps,  # total nr of timesteps
+                        len(self.buckets_grid_point_label))  # nr of grid points
+        self._climatic_mb = np.empty(output_shape)  # kg m-2
+        self._ice_mb = np.empty(output_shape)  # kg m-2
+        self._mb_heights = np.empty(output_shape)  # m
+        self._year_to_index = {}  # saving the array positions of years
+        self._current_index = 0  # keep track of last added position
 
         if self.store_buckets:
             # the mb_buckets are stored in a dict, with key corresponding to the
@@ -1617,7 +1637,7 @@ class SfcTypeTIModel(MassBalanceModel):
                     y0=spinup_start_year, y1=self.ys)[:-1]
             elif self.climate_resolution == 'daily':
                 spinup_steps = float_years_timeseries(
-                    y0=spinup_start_year, y1=self.ys, monthly=False)[:-1]
+                    y0=spinup_start_year, y1=self.ys, daily=True)[:-1]
             else:
                 raise NotImplementedError(
                     f"climate_resolution {self.climate_resolution}")
@@ -1640,17 +1660,26 @@ class SfcTypeTIModel(MassBalanceModel):
 
     @property
     def climatic_mb(self):
-        return pd.DataFrame(self._climatic_mb,
+        pd_dict = {}
+        for year in self._year_to_index:
+            pd_dict[year] = self._climatic_mb[[self._year_to_index[year]]][0]
+        return pd.DataFrame(pd_dict,
                             index=self.buckets_grid_point_label)
 
     @property
     def ice_mb(self):
-        return pd.DataFrame(self._ice_mb,
+        pd_dict = {}
+        for year in self._year_to_index:
+            pd_dict[year] = self._ice_mb[[self._year_to_index[year]]][0]
+        return pd.DataFrame(pd_dict,
                             index=self.buckets_grid_point_label)
 
     @property
     def mb_heights(self):
-        return pd.DataFrame(self._mb_heights,
+        pd_dict = {}
+        for year in self._year_to_index:
+            pd_dict[year] = self._mb_heights[[self._year_to_index[year]]][0]
+        return pd.DataFrame(pd_dict,
                             index=self.buckets_grid_point_label)
 
     @property
@@ -1833,18 +1862,23 @@ class SfcTypeTIModel(MassBalanceModel):
                 delta_kg_m2[all_melted_grid_points] -= ice_melt_kg_m2  # ice melt
 
             # save the climatic mb of this timestep
-            self._climatic_mb[year] = delta_kg_m2
+            self._climatic_mb[self._current_index] = delta_kg_m2
 
         # save the mb of ice, this includes potential ice gain from aging after
         # the call of _bucket_aging and melt where all snow/firn buckets are
         # empty
         if save_mbs:
-            self._ice_mb[year] = self.mb_buckets_np[:, -1].copy()
+            self._ice_mb[self._current_index] = self.mb_buckets_np[:, -1].copy()
         # we empty the ice bucket after saving to avoid any double counting
         self.mb_buckets_np[:, -1] = 0.0
 
         if save_mbs:
-            self._mb_heights[year] = heights
+            self._mb_heights[self._current_index] = heights
+
+        # at the end we save the year of current index and increase it
+        if save_mbs:
+            self._year_to_index[year] = self._current_index
+            self._current_index += 1
 
         # update the current year of the buckets, this is set one timestep later
         # to the currently applied climate step (e.g. after applying the climate
@@ -1866,14 +1900,14 @@ class SfcTypeTIModel(MassBalanceModel):
             self.mb_buckets_year = date_to_floatyear(buckets_yr, buckets_month)
         elif self.climate_resolution == 'daily':
             buckets_yr, buckets_month, buckets_day = floatyear_to_date(
-                float(year), months_only=False)
+                float(year), return_day=True)
             # date_to_floatyear can deal with monthly and yearly overflows
             # (e.g. 32.01. == 01.02., and 32.12.2000 == 01.01.2001)
             self.mb_buckets_year = date_to_floatyear(
                 buckets_yr, buckets_month, buckets_day + 1)
             # finally we get the values without the overflow for aging below
             buckets_yr, buckets_month, buckets_day = floatyear_to_date(
-                self.mb_buckets_year, months_only=False
+                self.mb_buckets_year, return_day=True
             )
         else:
             raise NotImplementedError(
@@ -2004,11 +2038,11 @@ class SfcTypeTIModel(MassBalanceModel):
             if mb_resolution == 'annual':
                 missing_float_years = float_years_timeseries(
                     y0=np.floor(self.mb_buckets_year), y1=year,
-                    include_last_year=True, monthly=False)
+                    include_last_year=True, daily=True)
             elif mb_resolution == 'monthly':
                 missing_float_years = float_years_timeseries(
                     y0=np.floor(self.mb_buckets_year), y1=np.ceil(year) + 1,
-                    monthly=False
+                    daily=True
                 )
                 # only keep those actually needed
                 y, m = floatyear_to_date(year)
@@ -2019,10 +2053,10 @@ class SfcTypeTIModel(MassBalanceModel):
             elif mb_resolution == 'daily':
                 missing_float_years = float_years_timeseries(
                     y0=np.floor(self.mb_buckets_year), y1=np.ceil(year) + 1,
-                    monthly=False
+                    daily=True
                 )
                 # only keep those actually needed
-                y, m, d = floatyear_to_date(year, months_only=False)
+                y, m, d = floatyear_to_date(year, return_day=True)
                 missing_float_years = [yr for yr in missing_float_years
                                        # date_to_floatyear can handle overflows
                                        # e.g. 32.12.2000 == 01.01.2001
@@ -2087,9 +2121,9 @@ class SfcTypeTIModel(MassBalanceModel):
                         mb_resolution='annual')
 
         if climatic_mb_or_ice_mb == 'climatic_mb':
-            mbs = self.climatic_mb
+            mbs = self._climatic_mb
         elif climatic_mb_or_ice_mb == 'ice_mb':
-            mbs = self.ice_mb
+            mbs = self._ice_mb
         else:
             raise NotImplementedError(
                 f"'climatic_mb_or_ice_mb': {climatic_mb_or_ice_mb}")
@@ -2097,15 +2131,17 @@ class SfcTypeTIModel(MassBalanceModel):
         # ok now everything should be available, and we can sum up annual values
         # as needed
         if self.climate_resolution == 'annual':
-            annual_mb = mbs[year].values
+            annual_mb = mbs[self._year_to_index[year]]
         elif self.climate_resolution == 'monthly':
             float_months = float_years_timeseries(y0=year, y1=year+1,
-                                                  monthly=True)[:-1]
-            annual_mb = np.sum(mbs[float_months].values, axis=1)
+                                                  daily=False)[:-1]
+            idx = [self._year_to_index[yr] for yr in float_months]
+            annual_mb = np.sum(mbs[idx], axis=0)
         elif self.climate_resolution == 'daily':
             float_days = float_years_timeseries(y0=year, y1=year+1,
-                                                monthly=False)[:-1]
-            annual_mb = np.sum(mbs[float_days].values, axis=1)
+                                                daily=True)[:-1]
+            idx = [self._year_to_index[yr] for yr in float_days]
+            annual_mb = np.sum(mbs[idx], axis=0)
         else:
             raise NotImplementedError(
                 f"'climate_resolution': {self.climate_resolution}")
@@ -2170,9 +2206,9 @@ class SfcTypeTIModel(MassBalanceModel):
                         mb_resolution='monthly')
 
         if climatic_mb_or_ice_mb == 'climatic_mb':
-            mbs = self.climatic_mb
+            mbs = self._climatic_mb
         elif climatic_mb_or_ice_mb == 'ice_mb':
-            mbs = self.ice_mb
+            mbs = self._ice_mb
         else:
             raise NotImplementedError(
                 f"'climatic_mb_or_ice_mb': {climatic_mb_or_ice_mb}")
@@ -2183,12 +2219,12 @@ class SfcTypeTIModel(MassBalanceModel):
             raise NotImplementedError('You can not get a monthly mb with an '
                                       'annual climate resolution!')
         elif self.climate_resolution == 'monthly':
-            monthly_mb = mbs[year].values
+            monthly_mb = mbs[self._year_to_index[year]]
         elif self.climate_resolution == 'daily':
             y_start, m_start, d_start = floatyear_to_date(year,
-                                                          months_only=False)
+                                                          return_day=True)
             float_days = float_years_timeseries(
-                y0=year, y1=year + 1, monthly=False)[:-1]
+                y0=year, y1=year + 1, daily=True)[:-1]
             # only keep days larger equal than the start of the month
             float_days = [day for day in float_days
                           if day >= date_to_floatyear(y_start, m_start, 1)]
@@ -2197,7 +2233,9 @@ class SfcTypeTIModel(MassBalanceModel):
             y_end = y_start if m_start != 12 else y_start + 1
             float_days = [day for day in float_days
                           if day < date_to_floatyear(y_end, m_end, 1)]
-            monthly_mb = np.sum(mbs[float_days].values, axis=1)
+
+            idx = [self._year_to_index[yr] for yr in float_days]
+            monthly_mb = np.sum(mbs[idx], axis=0)
         else:
             raise NotImplementedError(
                 f"'climate_resolution': {self.climate_resolution}")
@@ -2263,9 +2301,9 @@ class SfcTypeTIModel(MassBalanceModel):
                         mb_resolution='daily')
 
         if climatic_mb_or_ice_mb == 'climatic_mb':
-            mbs = self.climatic_mb
+            mbs = self._climatic_mb
         elif climatic_mb_or_ice_mb == 'ice_mb':
-            mbs = self.ice_mb
+            mbs = self._ice_mb
         else:
             raise NotImplementedError(
                 f"'climatic_mb_or_ice_mb': {climatic_mb_or_ice_mb}")
@@ -2276,7 +2314,7 @@ class SfcTypeTIModel(MassBalanceModel):
                 'You can not get a daily mb with an annual or monthly climate '
                 f'resolution! Your climate resolution: {self.climate_resolution}')
         elif self.climate_resolution == 'daily':
-            daily_mb = mbs[year].values
+            daily_mb = mbs[self._year_to_index[year]]
         else:
             raise NotImplementedError(
                 f"'climate_resolution': {self.climate_resolution}")

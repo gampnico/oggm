@@ -638,16 +638,18 @@ class TestMassBalanceModels:
             - filename: climate_historical_daily
             - input_filesuffix: 
             - bias: 0.0
+            - ys: 2000
+            - ye: 2019
             - aging_frequency: annual
             - climate_resolution: annual
             - spinup_years: 6
             - save_spinup_mbs: False
-            - ys: 2000
             - tau_e: 1.0
             - melt_f_ratio: 0.5
             - melt_f_change: neg_exp
             - store_buckets: False
             - use_previous_mbs: False
+            - nr_timesteps: 20
             - mb_buckets_year: 2000
         """)
         mb_mod = massbalance.SfcTypeTIModel(hef_gdir,
@@ -902,7 +904,7 @@ class TestMassBalanceModels:
 
             if is_daily_model(model):
                 # daily resolution
-                years_d = utils.float_years_timeseries(ys, ye, monthly=False,
+                years_d = utils.float_years_timeseries(ys, ye, daily=True,
                                                        include_last_year=True)
                 smb_daily = mb_mod.get_specific_mb(year=years_d, fls=fls,
                                                    heights=heights,
@@ -1409,15 +1411,16 @@ class TestMassBalanceModels:
             np.testing.assert_allclose(inv_fl.surface_h, mb_mod.fl.surface_h)
 
             target_year_annual = 2002
-            # after making this call all mbs from ys to 2018 were calculated and all
-            # buckets are stored
+            # after making this call all mbs from ys to 2002 were calculated and
+            # all buckets are stored
             smb_annual[setting] = mb_mod.get_annual_mb(heights=h,
-                                                     year=target_year_annual)
+                                                       year=target_year_annual)
             assert mb_mod.mb_buckets_year == target_year_annual + 1
             # here we test getting the ice_mb and to get a previously calculated
             # value
             ice_mb_annual[setting] = mb_mod.get_annual_mb(
-                heights=h, year=target_year_annual, climatic_mb_or_ice_mb='ice_mb')
+                heights=h, year=target_year_annual,
+                climatic_mb_or_ice_mb='ice_mb')
 
             if clim_res in ['monthly', 'daily']:
                 target_year_month = target_year_annual + 1
@@ -1425,10 +1428,12 @@ class TestMassBalanceModels:
                 smb_monthly_4[setting] = mb_mod.get_monthly_mb(
                     heights=h,
                     year=date_to_floatyear(y=target_year_month, m=4))
-                assert mb_mod.mb_buckets_year == date_to_floatyear(y=target_year_month, m=5)
+                assert mb_mod.mb_buckets_year == date_to_floatyear(
+                    y=target_year_month, m=5)
                 smb_monthly_8[setting] = mb_mod.get_monthly_mb(
                     heights=h, year=date_to_floatyear(y=target_year_month, m=8))
-                assert mb_mod.mb_buckets_year == date_to_floatyear(y=target_year_month, m=9)
+                assert mb_mod.mb_buckets_year == date_to_floatyear(
+                    y=target_year_month, m=9)
 
             if clim_res in ['daily']:
                 target_year_day = target_year_month
@@ -1459,7 +1464,7 @@ class TestMassBalanceModels:
             for yr in mb_buckets:
                 # check snow bucket is empty after aging
                 should_be_empty = False
-                y, m, d = floatyear_to_date(yr, months_only=False)
+                y, m, d = floatyear_to_date(yr, return_day=True)
                 if aging == 'annual' and m == 1 and d == 1:
                     should_be_empty = True
                 elif aging == 'monthly' and d == 1:
@@ -1482,6 +1487,13 @@ class TestMassBalanceModels:
                 if yr < mb_mod.mb_buckets_year:
                     np.testing.assert_allclose(
                         mb_mod.mb_heights[yr], h)
+
+            # check allocated array mb_mod._climatic_mb has correct shape
+            mb_mod.get_annual_mb(heights=h,
+                                 year=mb_mod.ye)
+            max_used_index = mb_mod._year_to_index[max(mb_mod._year_to_index)]
+            # +1 because index starts with 0
+            assert max_used_index + 1 == mb_mod._climatic_mb.shape[0]
 
         if do_plot:
             # compare sfc tracking to mb_models without surface tracking
