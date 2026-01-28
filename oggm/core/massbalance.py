@@ -4,6 +4,8 @@
 import logging
 import os
 import inspect
+from datetime import date, timedelta
+import calendar
 # External libs
 import cftime
 import numpy as np
@@ -664,6 +666,10 @@ class MonthlyTIModel(MassBalanceModel):
             self.climate_source = nc.climate_source
             self.ys = self.years[0]
             self.ye = self.years[-1]
+            self.ys_float = date_to_floatyear(self.years[0], self.months[0],
+                                              self.days[0])
+            self.ye_float = date_to_floatyear(self.years[-1], self.months[-1],
+                                              self.days[-1])
 
     def __repr__(self):
         """String Representation of the mass balance model"""
@@ -769,7 +775,7 @@ class MonthlyTIModel(MassBalanceModel):
         bool
             True if the year is within the climate period.
         """
-        return self.ys <= year <= self.ye
+        return self.ys_float <= year <= self.ye_float
 
     def validate_year(self, year: int) -> int:
         """Get and validate if a year is outside the data's time range.
@@ -784,7 +790,7 @@ class MonthlyTIModel(MassBalanceModel):
         if not self.is_year_valid(year):  # this is overloaded by subclasses
             raise ValueError(
                 f'year {year} out of the valid time bounds: '
-                f'[{self.ys}, {self.ye}]'
+                f'[{self.ys_float}, {self.ye_float}]'
             )
         return year
 
@@ -1186,7 +1192,7 @@ class DailyTIModel(MonthlyTIModel):
             Temperatures, melt temperatures, total precipitation, and
             solid precipitation.
         """
-        y, m, d = floatyear_to_date(year, months_only=False)
+        y, m, d = floatyear_to_date(year, return_day=True)
         y = self.validate_year(year=y)
         pok = np.where((self.years == y) &
                        (self.months == m) &
@@ -1357,6 +1363,8 @@ class SfcTypeTIModel(MassBalanceModel):
         store_buckets: bool or str = False,
         store_buckets_dates: ArrayLike = None,
         use_previous_mbs: bool = False,
+        store_snowline: bool = False,
+        store_snowline_start_month: str = 'Oct',
         **kwargs,
     ):
         """Surface type temperature index model.
@@ -1439,6 +1447,16 @@ class SfcTypeTIModel(MassBalanceModel):
             mb_models work, because with surface tracking we have included a
             memory of the past. If False and you try to revisit a past year and
             error is raised.
+        store_snowline: bool, default False
+            Experimental: save the snowline in the climate_resolution. For this
+            the lowest elevation where the bucket is not zero is set as the
+            snowline. Older buckets are considered starting from
+            store_snowline_start_month.
+        store_snowline_start_month: str, default 'Oct'
+            Experimental: the start month of buckets used for the derivation of
+            the snowline. E.g. with the default 'Oct', if you want to derive the
+            snowline at Mar, all buckets starting from the previous Oct are
+            considered.
         **kwargs:
             keyword arguments to pass to the mb_model_class
         """
@@ -1460,6 +1478,8 @@ class SfcTypeTIModel(MassBalanceModel):
         self.input_filesuffix = self.mbmod.input_filesuffix
         self.hemisphere = self.mbmod.hemisphere
         self.bias = self.mbmod.bias
+        self.ys = self.mbmod.ys
+        self.ye = self.mbmod.ye
 
         # check compatibility of aging_frequency and climate_resolution: aging
         # can not happen at higher temporal resolution than the climate steps
@@ -1552,9 +1572,6 @@ class SfcTypeTIModel(MassBalanceModel):
         # set a template for an empty bucket and mb containers
         self._empty_mb_buckets_np = np.zeros((len(self.buckets_grid_point_label),
                                               len(self.buckets)))
-        self._empty_smb_pd = pd.DataFrame(
-            0, index=self.buckets_grid_point_label, columns=[]
-        )
 
         # stuff related to varying melt_f for each bucket
         self.tau_e = tau_e
@@ -1582,15 +1599,50 @@ class SfcTypeTIModel(MassBalanceModel):
         # if the user wants to return previously calculated mb values
         self.use_previous_mbs = use_previous_mbs
 
+        # snowline stuff
+        self.store_snowline = store_snowline
+        if self.store_snowline:
+            # how many buckets we need to add for the snowline buckets
+            self._snowline_start_month = {
+                "Jan": 11, "Feb": 10, "Mar": 9, "Apr": 8, "May": 7, "Jun": 6,
+                "Jul": 5, "Aug": 4, "Sep": 3, "Oct": 2, "Nov": 1, "Dec": 0,
+            }[store_snowline_start_month]
+            self._snowline = []
+            self._snowline_year = []
+            # this are the height values for the special cases fully snow
+            # covered or fully snow free
+            self.snowline_inf_values = {}
+
         # Initialise buckets and conduct a potential spinup
         self._init_buckets()
 
     def _init_buckets(self):
         # reset some containers for a fresh start
         self.mb_buckets_np = self._empty_mb_buckets_np.copy()  # kg m-2
-        self._climatic_mb = {}  # kg m-2
-        self._ice_mb = {}  # kg m-2
-        self._mb_heights = {}  # m
+        # define length of needed timesteps
+        first_year = self.ys
+        if self.save_spinup_mbs:
+            first_year -= self.spinup_years
+        if self.climate_resolution == 'annual':
+            self.nr_timesteps = len(range(first_year, self.ye + 1))
+        elif self.climate_resolution == 'monthly':
+            self.nr_timesteps = len(float_years_timeseries(
+                y0=first_year, y1=self.ye, include_last_year=True, ))
+        elif self.climate_resolution == 'daily':
+            self.nr_timesteps = len(float_years_timeseries(
+                y0=first_year, y1=self.ye, include_last_year=True,
+                daily=True))
+        else:
+            raise NotImplementedError(
+                f"climate_resolution {self.climate_resolution}")
+
+        output_shape = (self.nr_timesteps,  # total nr of timesteps
+                        len(self.buckets_grid_point_label))  # nr of grid points
+        self._climatic_mb = np.empty(output_shape)  # kg m-2
+        self._ice_mb = np.empty(output_shape)  # kg m-2
+        self._mb_heights = np.empty(output_shape)  # m
+        self._year_to_index = {}  # saving the array positions of years
+        self._current_index = 0  # keep track of last added position
 
         if self.store_buckets:
             # the mb_buckets are stored in a dict, with key corresponding to the
@@ -1624,7 +1676,7 @@ class SfcTypeTIModel(MassBalanceModel):
                     y0=spinup_start_year, y1=self.ys)[:-1]
             elif self.climate_resolution == 'daily':
                 spinup_steps = float_years_timeseries(
-                    y0=spinup_start_year, y1=self.ys, monthly=False)[:-1]
+                    y0=spinup_start_year, y1=self.ys, daily=True)[:-1]
             else:
                 raise NotImplementedError(
                     f"climate_resolution {self.climate_resolution}")
@@ -1647,18 +1699,35 @@ class SfcTypeTIModel(MassBalanceModel):
 
     @property
     def climatic_mb(self):
-        return pd.DataFrame(self._climatic_mb,
+        pd_dict = {}
+        for year in self._year_to_index:
+            pd_dict[year] = self._climatic_mb[[self._year_to_index[year]]][0]
+        return pd.DataFrame(pd_dict,
                             index=self.buckets_grid_point_label)
 
     @property
     def ice_mb(self):
-        return pd.DataFrame(self._ice_mb,
+        pd_dict = {}
+        for year in self._year_to_index:
+            pd_dict[year] = self._ice_mb[[self._year_to_index[year]]][0]
+        return pd.DataFrame(pd_dict,
                             index=self.buckets_grid_point_label)
 
     @property
     def mb_heights(self):
-        return pd.DataFrame(self._mb_heights,
+        pd_dict = {}
+        for year in self._year_to_index:
+            pd_dict[year] = self._mb_heights[[self._year_to_index[year]]][0]
+        return pd.DataFrame(pd_dict,
                             index=self.buckets_grid_point_label)
+
+    @property
+    def snowline(self):
+        return np.array(self._snowline)
+
+    @property
+    def snowline_year(self):
+        return np.array(self._snowline_year)
 
     @property
     def melt_f(self):
@@ -1840,18 +1909,23 @@ class SfcTypeTIModel(MassBalanceModel):
                 delta_kg_m2[all_melted_grid_points] -= ice_melt_kg_m2  # ice melt
 
             # save the climatic mb of this timestep
-            self._climatic_mb[year] = delta_kg_m2
+            self._climatic_mb[self._current_index] = delta_kg_m2
 
         # save the mb of ice, this includes potential ice gain from aging after
         # the call of _bucket_aging and melt where all snow/firn buckets are
         # empty
         if save_mbs:
-            self._ice_mb[year] = self.mb_buckets_np[:, -1].copy()
+            self._ice_mb[self._current_index] = self.mb_buckets_np[:, -1].copy()
         # we empty the ice bucket after saving to avoid any double counting
         self.mb_buckets_np[:, -1] = 0.0
 
         if save_mbs:
-            self._mb_heights[year] = heights
+            self._mb_heights[self._current_index] = heights
+
+        # at the end we save the year of current index and increase it
+        if save_mbs:
+            self._year_to_index[year] = self._current_index
+            self._current_index += 1
 
         # update the current year of the buckets, this is set one timestep later
         # to the currently applied climate step (e.g. after applying the climate
@@ -1873,14 +1947,14 @@ class SfcTypeTIModel(MassBalanceModel):
             self.mb_buckets_year = date_to_floatyear(buckets_yr, buckets_month)
         elif self.climate_resolution == 'daily':
             buckets_yr, buckets_month, buckets_day = floatyear_to_date(
-                float(year), months_only=False)
+                float(year), return_day=True)
             # date_to_floatyear can deal with monthly and yearly overflows
             # (e.g. 32.01. == 01.02., and 32.12.2000 == 01.01.2001)
             self.mb_buckets_year = date_to_floatyear(
                 buckets_yr, buckets_month, buckets_day + 1)
             # finally we get the values without the overflow for aging below
             buckets_yr, buckets_month, buckets_day = floatyear_to_date(
-                self.mb_buckets_year, months_only=False
+                self.mb_buckets_year, return_day=True
             )
         else:
             raise NotImplementedError(
@@ -1942,6 +2016,32 @@ class SfcTypeTIModel(MassBalanceModel):
                     self.mb_buckets_np[:, :-1].copy(),
                     index=self.buckets_grid_point_label,
                     columns=self.buckets[:-1],)
+
+        # store snowline
+        if self.store_snowline:
+            if self.mb_buckets_year not in self._snowline_year:
+                number_buckets = buckets_month + self._snowline_start_month
+                # + 1 is for the snow bucket
+                not_melted_layers = np.any(
+                    self.mb_buckets_np[:, :number_buckets + 1] > 0, axis=1)
+
+                # check if completely snow free
+                if not np.any(not_melted_layers):
+                    self._snowline.append(np.inf)
+                    # store a height value for snow free case
+                    if np.inf not in self.snowline_inf_values:
+                        self.snowline_inf_values[np.inf] = np.max(heights) + 50
+                # check if fully snow covered
+                elif np.all(not_melted_layers):
+                    self._snowline.append(-np.inf)
+
+                    if -np.inf not in self.snowline_inf_values:
+                        # store a height value for fully snow covered case
+                        self.snowline_inf_values[-np.inf] = np.min(heights) - 50
+                # otherwise get the lowest elevation band with snow cover
+                else:
+                    self._snowline.append(heights[not_melted_layers][-1])
+                self._snowline_year.append(self.mb_buckets_year)
 
         # nothing to return as every thing is stored is some variables
         return None
@@ -2011,11 +2111,11 @@ class SfcTypeTIModel(MassBalanceModel):
             if mb_resolution == 'annual':
                 missing_float_years = float_years_timeseries(
                     y0=np.floor(self.mb_buckets_year), y1=year,
-                    include_last_year=True, monthly=False)
+                    include_last_year=True, daily=True)
             elif mb_resolution == 'monthly':
                 missing_float_years = float_years_timeseries(
                     y0=np.floor(self.mb_buckets_year), y1=np.ceil(year) + 1,
-                    monthly=False
+                    daily=True
                 )
                 # only keep those actually needed
                 y, m = floatyear_to_date(year)
@@ -2026,10 +2126,10 @@ class SfcTypeTIModel(MassBalanceModel):
             elif mb_resolution == 'daily':
                 missing_float_years = float_years_timeseries(
                     y0=np.floor(self.mb_buckets_year), y1=np.ceil(year) + 1,
-                    monthly=False
+                    daily=True
                 )
                 # only keep those actually needed
-                y, m, d = floatyear_to_date(year, months_only=False)
+                y, m, d = floatyear_to_date(year, return_day=True)
                 missing_float_years = [yr for yr in missing_float_years
                                        # date_to_floatyear can handle overflows
                                        # e.g. 32.12.2000 == 01.01.2001
@@ -2094,9 +2194,9 @@ class SfcTypeTIModel(MassBalanceModel):
                         mb_resolution='annual')
 
         if climatic_mb_or_ice_mb == 'climatic_mb':
-            mbs = self.climatic_mb
+            mbs = self._climatic_mb
         elif climatic_mb_or_ice_mb == 'ice_mb':
-            mbs = self.ice_mb
+            mbs = self._ice_mb
         else:
             raise NotImplementedError(
                 f"'climatic_mb_or_ice_mb': {climatic_mb_or_ice_mb}")
@@ -2104,15 +2204,17 @@ class SfcTypeTIModel(MassBalanceModel):
         # ok now everything should be available, and we can sum up annual values
         # as needed
         if self.climate_resolution == 'annual':
-            annual_mb = mbs[year].values
+            annual_mb = mbs[self._year_to_index[year]]
         elif self.climate_resolution == 'monthly':
             float_months = float_years_timeseries(y0=year, y1=year+1,
-                                                  monthly=True)[:-1]
-            annual_mb = np.sum(mbs[float_months].values, axis=1)
+                                                  daily=False)[:-1]
+            idx = [self._year_to_index[yr] for yr in float_months]
+            annual_mb = np.sum(mbs[idx], axis=0)
         elif self.climate_resolution == 'daily':
             float_days = float_years_timeseries(y0=year, y1=year+1,
-                                                monthly=False)[:-1]
-            annual_mb = np.sum(mbs[float_days].values, axis=1)
+                                                daily=True)[:-1]
+            idx = [self._year_to_index[yr] for yr in float_days]
+            annual_mb = np.sum(mbs[idx], axis=0)
         else:
             raise NotImplementedError(
                 f"'climate_resolution': {self.climate_resolution}")
@@ -2177,9 +2279,9 @@ class SfcTypeTIModel(MassBalanceModel):
                         mb_resolution='monthly')
 
         if climatic_mb_or_ice_mb == 'climatic_mb':
-            mbs = self.climatic_mb
+            mbs = self._climatic_mb
         elif climatic_mb_or_ice_mb == 'ice_mb':
-            mbs = self.ice_mb
+            mbs = self._ice_mb
         else:
             raise NotImplementedError(
                 f"'climatic_mb_or_ice_mb': {climatic_mb_or_ice_mb}")
@@ -2190,12 +2292,12 @@ class SfcTypeTIModel(MassBalanceModel):
             raise NotImplementedError('You can not get a monthly mb with an '
                                       'annual climate resolution!')
         elif self.climate_resolution == 'monthly':
-            monthly_mb = mbs[year].values
+            monthly_mb = mbs[self._year_to_index[year]]
         elif self.climate_resolution == 'daily':
             y_start, m_start, d_start = floatyear_to_date(year,
-                                                          months_only=False)
+                                                          return_day=True)
             float_days = float_years_timeseries(
-                y0=year, y1=year + 1, monthly=False)[:-1]
+                y0=year, y1=year + 1, daily=True)[:-1]
             # only keep days larger equal than the start of the month
             float_days = [day for day in float_days
                           if day >= date_to_floatyear(y_start, m_start, 1)]
@@ -2204,7 +2306,9 @@ class SfcTypeTIModel(MassBalanceModel):
             y_end = y_start if m_start != 12 else y_start + 1
             float_days = [day for day in float_days
                           if day < date_to_floatyear(y_end, m_end, 1)]
-            monthly_mb = np.sum(mbs[float_days].values, axis=1)
+
+            idx = [self._year_to_index[yr] for yr in float_days]
+            monthly_mb = np.sum(mbs[idx], axis=0)
         else:
             raise NotImplementedError(
                 f"'climate_resolution': {self.climate_resolution}")
@@ -2270,9 +2374,9 @@ class SfcTypeTIModel(MassBalanceModel):
                         mb_resolution='daily')
 
         if climatic_mb_or_ice_mb == 'climatic_mb':
-            mbs = self.climatic_mb
+            mbs = self._climatic_mb
         elif climatic_mb_or_ice_mb == 'ice_mb':
-            mbs = self.ice_mb
+            mbs = self._ice_mb
         else:
             raise NotImplementedError(
                 f"'climatic_mb_or_ice_mb': {climatic_mb_or_ice_mb}")
@@ -2283,7 +2387,7 @@ class SfcTypeTIModel(MassBalanceModel):
                 'You can not get a daily mb with an annual or monthly climate '
                 f'resolution! Your climate resolution: {self.climate_resolution}')
         elif self.climate_resolution == 'daily':
-            daily_mb = mbs[year].values
+            daily_mb = mbs[self._year_to_index[year]]
         else:
             raise NotImplementedError(
                 f"'climate_resolution': {self.climate_resolution}")
@@ -3173,6 +3277,7 @@ def mb_calibration_from_wgms_mb(gdir, settings_filesuffix='',
 
     gdir.observations['ref_mb'] = {
         'value': mbdf['ANNUAL_BALANCE'].mean(),
+        'unit': 'kg m-2 yr-1',
         'years': mbdf.index.values,
     }
 
@@ -3314,6 +3419,7 @@ def mb_calibration_from_hugonnet_mb(gdir, *,
 
         ref_mb_use = {
             'value': ref_mb,
+            'unit': 'kg m-2 yr-1',
             'period': ref_mb_period,
             'err': ref_mb_err,
         }
@@ -3389,12 +3495,85 @@ def mb_calibration_from_hugonnet_mb(gdir, *,
                                              )
 
 
+def _floatyears_from_ref_mb_period(ref_mb_period):
+    """Helper function to detect the time resolution required by the `mb_model`
+    and to provide all necessary dates in the floatyear convention.
+
+    - If the period starts on January 1st and ends on January 1st or December
+      31st, an annual mass balance and a yearly timeseries can be used.
+    - If the period starts on the first day of a month and ends on the first day
+      of another month or the last day of a month, a monthly mass balance and a
+      monthly timeseries can be used.
+    - If the period starts or ends on an arbitrary day, a daily mass balance and
+      a daily timeseries are used.
+    """
+
+    date0, date1 = ref_mb_period.split('_')
+    y0, m0, d0 = [int(i) for i in date0.split('-')]
+    y1, m1, d1 = [int(i) for i in date1.split('-')]
+
+    start_date = date(y0, m0, d0)
+    end_date = date(y1, m1, d1)
+
+    # Check which resolution we need to use within the mb_model:
+    # annual: period starts 01.01.y0 and ends with 01.01.y1 (exclude y1) or
+    #         31.12.y1 (include y1)
+    if (start_date == date(y0, 1, 1) and
+            (end_date == date(y1, 1, 1) or end_date == date(y1, 12, 31))):
+        time_resolution = 'annual'
+        if end_date == date(y1, 1, 1):
+            floatyears = np.arange(y0, y1)
+        else:
+            floatyears = np.arange(y0, y1 + 1)
+
+    # monthly: period starts with 01.m0.y0 and ends with 01.m1.y1 (exclude
+    #          m1) or with the last day of m1 (include m1)
+    elif (start_date.day == 1 and
+          (end_date.day == 1 or
+           end_date.day == calendar.monthrange(y1, m1)[1])):
+        time_resolution = 'monthly'
+        if end_date.day == 1:
+            dates = np.arange(
+                np.datetime64(start_date, 'M'),
+                np.datetime64(end_date, 'M'),
+                dtype='datetime64[M]'
+            )
+        else:
+            dates = np.arange(
+                np.datetime64(start_date, 'M'),
+                np.datetime64(end_date + timedelta(days=1), 'M'),
+                dtype='datetime64[M]'
+            )
+        floatyears = date_to_floatyear(
+            y=dates.astype('datetime64[Y]').astype(int) + 1970,
+            m=(dates.astype('datetime64[M]').astype(int) % 12) + 1)
+
+    # daily: all the rest, the end day is always included
+    else:
+        time_resolution = 'daily'
+        dates = np.arange(
+            np.datetime64(start_date, 'D'),
+            np.datetime64(end_date + timedelta(days=1), 'D'),
+            dtype='datetime64[D]'
+        )
+
+        floatyears = date_to_floatyear(
+            y=dates.astype('datetime64[Y]').astype(int) + 1970,
+            m=(dates.astype('datetime64[M]').astype(int) % 12) + 1,
+            d=(dates - dates.astype('datetime64[M]').astype('datetime64[D]')
+               ).astype(int) + 1
+        )
+
+    return time_resolution, floatyears
+
+
 @entity_task(log, writes=['mb_calib'])
 def mb_calibration_from_scalar_mb(gdir, *,
                                   settings_filesuffix='',
                                   observations_filesuffix='',
                                   overwrite_observations=False,
                                   ref_mb=None,
+                                  ref_mb_unit='kg m-2 yr-1',
                                   ref_mb_err=None,
                                   ref_mb_period=None,
                                   ref_mb_years=None,
@@ -3419,8 +3598,8 @@ def mb_calibration_from_scalar_mb(gdir, *,
                                   ):
     """Determine the mass balance parameters from a scalar mass-balance value.
 
-    This calibrates the mass balance parameters using a reference average
-    MB data over a given period (e.g. average in-situ SMB or geodetic MB).
+    This calibrates the mass balance parameters using reference MB data over a
+    given period (annual average or cumulative in-situ SMB or geodetic MB).
     This flexible calibration allows to calibrate three parameters one after
     another. The first parameter is varied between two chosen values (a range)
     until the ref MB value is matched. If this fails, the second parameter
@@ -3431,7 +3610,7 @@ def mb_calibration_from_scalar_mb(gdir, *,
     calibration.
 
     This task can be called by other, "higher level" tasks, for example
-    :py:func:`oggm.core.massbalance.mb_calibration_from_geodetic_mb` or
+    :py:func:`oggm.core.massbalance.mb_calibration_from_hugonnet_mb` or
     :py:func:`oggm.core.massbalance.mb_calibration_from_wgms_mb`.
 
     Note that this does not compute the apparent mass balance at
@@ -3457,10 +3636,16 @@ def mb_calibration_from_scalar_mb(gdir, *,
         If you want to overwrite already existing observation values in the
         provided observations file set this to True. Default is False.
     ref_mb : float, required
-        the reference mass balance to match (units: kg m-2 yr-1)
-        It is required here - if you want to use available observations,
-        use :py:func:`oggm.core.massbalance.mb_calibration_from_geodetic_mb`
-        or :py:func:`oggm.core.massbalance.mb_calibration_from_wgms_mb`.
+        The reference mass balance to match, either provided as an annual
+        average (kg m-2 yr-1) or as a cumulative value (kg m-2) over the
+        provided ref_mb_period. The correct unit must be set in ref_mb_unit.
+        To use available observations, see
+        :py:func:`oggm.core.massbalance.mb_calibration_from_hugonnet_mb` or
+        :py:func:`oggm.core.massbalance.mb_calibration_from_wgms_mb`.
+    ref_mb_unit : str, optional
+        The unit of ref_mb`. Options are:
+        - 'kg m-2 yr-1': annual average MB over a full-year ref_mb_period.
+        - 'kg m-2': cumulative MB over any ref_mb_period.
     ref_mb_err : float, optional
         currently only used for logging - it is not used in the calibration.
     ref_mb_period : str, optional
@@ -3568,6 +3753,8 @@ def mb_calibration_from_scalar_mb(gdir, *,
     ref_mb_provided = {}
     if ref_mb is not None:
         ref_mb_provided['value'] = ref_mb
+    if ref_mb_unit is not None:
+        ref_mb_provided['unit'] = ref_mb_unit
     if ref_mb_err is not None:
         ref_mb_provided['err'] = ref_mb_err
     if ref_mb_period is not None:
@@ -3580,8 +3767,8 @@ def mb_calibration_from_scalar_mb(gdir, *,
     else:
         ref_mb_in_file = None
 
-    # if nothing is provided raise an error
-    if (ref_mb_provided == {}) and (ref_mb_in_file is None):
+    # if nothing is provided raise an error, 'unit' has a default value
+    if (set(ref_mb_provided.keys()) == {"unit"}) and (ref_mb_in_file is None):
         raise InvalidWorkflowError(
             'You have not provided an reference mass balance! Either add it to '
             'the observations file '
@@ -3593,7 +3780,7 @@ def mb_calibration_from_scalar_mb(gdir, *,
                                     overwrite_observations):
         gdir.observations['ref_mb'] = ref_mb_provided
         ref_mb_use = ref_mb_provided
-    elif ref_mb_in_file is not None and ref_mb_provided == {}:
+    elif ref_mb_in_file is not None and set(ref_mb_provided.keys()) == {"unit"}:
         # only provided in file, this is ok so continue
         ref_mb_use = ref_mb_in_file
     else:
@@ -3609,6 +3796,8 @@ def mb_calibration_from_scalar_mb(gdir, *,
 
     # now we can extract the actual values we want to use
     ref_mb = ref_mb_use['value']
+    if 'unit' in ref_mb_use:
+        ref_mb_unit = ref_mb_use['unit']
     if 'err' in ref_mb_use:
         ref_mb_err = ref_mb_use['err']
     if 'period' in ref_mb_use:
@@ -3618,8 +3807,8 @@ def mb_calibration_from_scalar_mb(gdir, *,
 
     # Let's go
     # Climate period
-    # TODO: doesn't support hydro years
     if ref_mb_years is not None:
+        time_resolution = 'annual'
         if len(ref_mb_years) > 2:
             years = np.asarray(ref_mb_years)
             ref_mb_period = 'custom'
@@ -3628,13 +3817,19 @@ def mb_calibration_from_scalar_mb(gdir, *,
             ref_mb_period = f'{ref_mb_years[0]}-01-01_{ref_mb_years[1]}-01-01'
         gdir.observations['ref_mb']['period'] = ref_mb_period
     elif ref_mb_period is not None:
-        y0, y1 = ref_mb_period.split('_')
-        y0 = int(y0.split('-')[0])
-        y1 = int(y1.split('-')[0])
-        years = np.arange(y0, y1)
+        time_resolution, years = _floatyears_from_ref_mb_period(ref_mb_period)
     else:
         raise InvalidParamsError('One of `ref_mb_years` or `ref_mb_period` '
                                  'is required for calibration.')
+
+    # check that ref_mb_unit fits to time_resolution
+    if time_resolution != 'annual' and ref_mb_unit == 'kg m-2 yr-1':
+        raise InvalidParamsError(
+            "When the reference mass balance period does not correspond to full "
+            f"calendar years (your provided `ref_mb_period` is {ref_mb_period}), "
+            "the mass balance must be provided in 'kg m-2' instead of"
+            "'kg m-2 yr-1'. Please set the correct unit using the `ref_mb_unit` "
+            "parameter and make sure `ref_mb` is provided correctly.")
 
     # Do we have a calving glacier?
     cmb = calving_mb(gdir)
@@ -3682,7 +3877,7 @@ def mb_calibration_from_scalar_mb(gdir, *,
     for y in years:
         if not mb_mod.is_year_valid(y):
             raise ValueError(f'year {y} out of the valid time bounds: '
-                             f'[{mb_mod.ys}, {mb_mod.ye}]')
+                             f'[{mb_mod.ys_float}, {mb_mod.ye_float}]')
 
     if calibrate_param1 == 'melt_f':
         min_range, max_range = melt_f_min, melt_f_max
@@ -3698,9 +3893,22 @@ def mb_calibration_from_scalar_mb(gdir, *,
         # Set the new attr value
         setattr(mb_mod, model_attr, x)
         if use_2d_mb:
-            out = mb_mod.get_specific_mb(heights=heights, widths=widths, year=years).mean()
+            out = mb_mod.get_specific_mb(
+                heights=heights, widths=widths, year=years,
+                time_resolution=time_resolution)
         else:
-            out = mb_mod.get_specific_mb(fls=fls, year=years).mean()
+            out = mb_mod.get_specific_mb(
+                fls=fls, year=years, time_resolution=time_resolution)
+
+        if ref_mb_unit == 'kg m-2 yr-1':
+            out = out.mean()
+        elif ref_mb_unit == 'kg m-2':
+            out = out.sum()
+        else:
+            raise NotImplementedError(
+                f"ref_mb_unit '{ref_mb_unit}' not implemented. Options are "
+                f"'kg m-2 yr-1' or 'kg m-2'.")
+
         return np.mean(out - ref_mb)
 
     try:
