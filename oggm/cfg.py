@@ -8,7 +8,6 @@ import shutil
 import sys
 import glob
 from collections import OrderedDict
-from distutils.util import strtobool
 
 import numpy as np
 import pandas as pd
