@@ -901,3 +901,37 @@ def add_to_basenames(basename, filename, docstr=''):
     if '.' not in filename:
         raise ValueError('The filename needs a proper file suffix!')
     BASENAMES[basename] = (filename, docstr)
+
+
+def strtobool(value: str) -> bool:
+    """Convert a string representation of truth to True or False.
+
+    Reimplementation of distutils's ``strtobool``, which is deprecated
+    from Python 3.12.
+
+    Parameters
+    ----------
+    value : bool
+        Any value to convert.
+
+    Returns
+    -------
+    bool
+        True for "y", "yes", "t", "true", "on", and "1"; False for "n", "no", "f", "false", "off", and "0".
+
+    Raises
+    ------
+    ValueError if ``value`` is anything else.
+    """
+
+    trues = {"yes", "true", "t", "y", "on", "1"}
+    falses = {"no", "false", "f", "n", "off", "0"}
+
+    if isinstance(value, str):
+        value = value.lower()
+        if value in trues:
+            return True
+        if value in falses:
+            return False
+
+    raise ValueError('Expected "%s"' % '", "'.join(trues | falses))
