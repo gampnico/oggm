@@ -398,7 +398,7 @@ class TestFuncs(object):
         assert_allclose(df.cenlon, cgidf['Glc_Long'])
         assert_allclose(df.rgi_area_km2, cgidf['Glc_Area'] * 1e-6, rtol=1e-3)
 
-        def test_strtobool(self):
+    def test_strtobool(self):
         trues = {"yes", "true", "t", "y", "on", "1"}
         falses = {"no", "false", "f", "n", "off", "0"}
         for value in trues:
