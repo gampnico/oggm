@@ -365,9 +365,9 @@ class Test_w5e5:
                     assert dtemp.isel(time=0).t2m.std() > 0
                     assert dtemp.longitude.std() > 0
                     assert dtemp.latitude.std() > 0
-                    # check being and end date (this is already tested for GSWP3-W5E5)
+                    # check begin and end date (this is already tested for GSWP3-W5E5)
                     assert dtemp.isel(time=0).time.values == np.datetime64('1940-01-01')
-                    assert dtemp.isel(time=-1).time.values == np.datetime64('2024-12-01')
+                    assert dtemp.isel(time=-1).time.values == np.datetime64('2025-12-01')
 
     def test_process_w5e5_data(self, class_case_dir):
 
@@ -555,7 +555,7 @@ class Test_ecmwf:
             ci = gdir.get_climate_info('CERA_repl')
             assert ci['baseline_climate_source'] == 'CERA+ERA5'
             assert ci['baseline_yr_0'] == 1901
-            assert ci['baseline_yr_1'] == 2024
+            assert ci['baseline_yr_1'] == 2025
 
             # Climate on common period
             sref = ref.sel(time=slice(ref.time[0], his.time[-1]))
