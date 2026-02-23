@@ -85,7 +85,8 @@ def run_prepro_levels(rgi_version=None, rgi_reg=None, border=None,
                       add_consensus_thickness=False, add_itslive_velocity=False,
                       add_millan_thickness=False, add_millan_velocity=False,
                       add_hugonnet_dhdt=False, add_bedmachine=False,
-                      add_glathida=False,
+                      add_glathida=False, add_distributed_thickness=False,
+                      add_export_thickness_geotiff=False,
                       start_level=None, start_base_url=None, max_level=5,
                       logging_level='WORKFLOW',
                       dynamic_spinup=False, err_dmdtda_scaling_factor=0.2,
@@ -169,6 +170,12 @@ def run_prepro_levels(rgi_version=None, rgi_reg=None, border=None,
     add_glathida : bool
         adds (reprojects) the glathida thickness data to the glacier
         directories. Data points are stored as csv files.
+    add_distributed_thickness : bool
+        adds a thickness field to gridded_data using
+        distribute_thickness_per_altitude.
+    add_export_thickness_geotiff : bool
+        exports the distributed thickness field to GeoTIFF files in a
+        subfolder of the L3 summary directory.
     start_level : int
         the pre-processed level to start from (default is to start from
         scratch). If set, you'll need to indicate start_base_url as well.
@@ -244,10 +251,6 @@ def run_prepro_levels(rgi_version=None, rgi_reg=None, border=None,
 
     # Set to True for operational runs
     override_params['continue_on_error'] = continue_on_error
-
-    # Do not use bias file if user wants melt_temp only
-    if mb_calibration_strategy in ['melt_temp', 'temp_melt']:
-        override_params['use_temp_bias_from_file'] = False
 
     # For centerlines we have to change the default evolution model and bed
     if centerlines:
@@ -633,7 +636,12 @@ def run_prepro_levels(rgi_version=None, rgi_reg=None, border=None,
 
         # Small optim to avoid concurrency
         utils.get_geodetic_mb_dataframe()
-        utils.get_temp_bias_dataframe()
+        utils.get_rgi70C_year('RGI2000-v7.0-C-01-00001')
+        utils.get_temp_bias_dataframe(dataset='w5e5')
+        utils.get_temp_bias_dataframe(dataset='w5e5', regional=True)
+        utils.get_temp_bias_dataframe(dataset='w5e5', rgi_version='70G', regional=True)
+        utils.get_temp_bias_dataframe(dataset='w5e5', rgi_version='70C', regional=True)
+        utils.get_temp_bias_dataframe(dataset='era5')
 
         use_regional_avg = False
         if '_regional' in mb_calibration_strategy:
@@ -666,10 +674,36 @@ def run_prepro_levels(rgi_version=None, rgi_reg=None, border=None,
 
             # Inversion: we match the consensus
             filter = border >= 20
-            workflow.calibrate_inversion_from_consensus(gdirs,
-                                                        apply_fs_on_mismatch=True,
-                                                        error_on_mismatch=False,
-                                                        filter_inversion_output=filter)
+
+            if rgi_version == '70G':
+                purl = ('https://cluster.klima.uni-bremen.de/~oggm/ref_mb_params/'
+                        'oggm_v1.6/inv_rgi7/rgi6_regional_inv_params_2025.1.csv')
+                params_df = pd.read_csv(utils.file_downloader(purl), index_col=0)
+                workflow.invert_from_params(gdirs,
+                                            params_df=params_df,
+                                            filter_inversion_output=filter)
+            elif rgi_version == '70C':
+                purl = ('https://cluster.klima.uni-bremen.de/~oggm/ref_mb_params/'
+                        'oggm_v1.6/inv_rgi7/rgi7c_glacier_inv_ref_2025.1.csv')
+                ref_vol_df = pd.read_csv(utils.file_downloader(purl), index_col=0)
+                # Small optim
+                ref_vol_df = ref_vol_df.loc[ref_vol_df.rgi_region == int(rgi_reg)]
+                ref_vol_df = ref_vol_df['inv_volume_km3'] * 1e9
+                workflow.execute_entity_task(workflow.calibrate_inversion_from_volume,
+                                             gdirs,
+                                             vol_ref_m3=ref_vol_df,
+                                             apply_fs_on_mismatch=True,
+                                             error_on_mismatch=False,
+                                             filter_inversion_output=filter)
+            else:
+                workflow.calibrate_inversion_from_consensus(gdirs,
+                                                            apply_fs_on_mismatch=True,
+                                                            error_on_mismatch=False,
+                                                            filter_inversion_output=filter)
+
+            # Distribute thickness per altitude for gridded data
+            if add_distributed_thickness:
+                workflow.execute_entity_task(tasks.distribute_thickness_per_altitude, gdirs)
 
             # We get ready for modelling
             if border >= 20:
@@ -680,6 +714,14 @@ def run_prepro_levels(rgi_version=None, rgi_reg=None, border=None,
         # Glacier stats
         opath = os.path.join(sum_dir, 'glacier_statistics_{}.csv'.format(rgi_reg))
         utils.compile_glacier_statistics(gdirs, path=opath)
+
+        # Export thickness to GeoTIFF if requested
+        if add_export_thickness_geotiff and add_distributed_thickness:
+            thickness_dir = os.path.join(sum_dir, 'distributed_thickness')
+            utils.mkdir(thickness_dir)
+            workflow.execute_entity_task(tasks.gridded_data_var_to_geotiff, gdirs,
+                                         varname='distributed_thickness',
+                                         output_folder=thickness_dir)
         opath = os.path.join(sum_dir, 'climate_statistics_{}.csv'.format(rgi_reg))
         utils.compile_climate_statistics(gdirs, path=opath)
         opath = os.path.join(sum_dir, 'fixed_geometry_mass_balance_{}.csv'.format(rgi_reg))
@@ -946,6 +988,13 @@ def parse_args(args):
                         help='adds (reprojects) the glathida point thickness '
                              'observations to the glacier directories. '
                              'The data points are stored as csv.')
+    parser.add_argument('--add-distributed-thickness', nargs='?', const=True, default=False,
+                        help='adds a thickness field to gridded_data using '
+                             'distribute_thickness_per_altitude.')
+    parser.add_argument('--add-export-thickness-geotiff', nargs='?', const=True, default=False,
+                        help='exports the distributed thickness field to '
+                             'GeoTIFF files in a subfolder of the L3 summary '
+                             'directory. Requires --add-distributed-thickness.')
     parser.add_argument('--demo', nargs='?', const=True, default=False,
                         help='if you want to run the prepro for the '
                              'list of demo glaciers.')
@@ -1036,6 +1085,8 @@ def parse_args(args):
                 add_hugonnet_dhdt=args.add_hugonnet_dhdt,
                 add_bedmachine=args.add_bedmachine,
                 add_glathida=args.add_glathida,
+                add_distributed_thickness=args.add_distributed_thickness,
+                add_export_thickness_geotiff=args.add_export_thickness_geotiff,
                 dynamic_spinup=dynamic_spinup,
                 err_dmdtda_scaling_factor=args.err_dmdtda_scaling_factor,
                 dynamic_spinup_start_year=args.dynamic_spinup_start_year,

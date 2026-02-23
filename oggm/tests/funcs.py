@@ -401,8 +401,6 @@ def init_hef(reset=False, border=40, logging_level='INFO', rgi_id=None,
     cfg.PATHS['working_dir'] = testdir
     cfg.PARAMS['trapezoid_lambdas'] = 1
     cfg.PARAMS['border'] = border
-    cfg.PARAMS['use_winter_prcp_fac'] = False
-    cfg.PARAMS['use_temp_bias_from_file'] = False
     cfg.PARAMS['evolution_model'] = 'FluxBased'
     cfg.PARAMS['downstream_line_shape'] = 'parabola'
     cfg.PARAMS['prcp_fac'] = 2.5
@@ -483,7 +481,8 @@ def init_hef(reset=False, border=40, logging_level='INFO', rgi_id=None,
 
     if flowline_type == 'centerlines':
         inversion.distribute_thickness_interp(gdir, varname_suffix='_interp')
-    inversion.distribute_thickness_per_altitude(gdir, varname_suffix='_alt')
+    inversion.distribute_thickness_per_altitude(gdir, smooth_radius=None,
+                                                varname_suffix='_alt')
 
     flowline.init_present_time_glacier(gdir)
 
@@ -509,8 +508,6 @@ def init_columbia(reset=False):
     cfg.PARAMS['border'] = 10
     cfg.PARAMS['use_kcalving_for_inversion'] = True
     cfg.PARAMS['use_kcalving_for_run'] = True
-    cfg.PARAMS['use_winter_prcp_fac'] = False
-    cfg.PARAMS['use_temp_bias_from_file'] = False
     cfg.PARAMS['prcp_fac'] = 2.5
     cfg.PARAMS['baseline_climate'] = 'CRU'
     cfg.PARAMS['evolution_model'] = 'FluxBased'
@@ -550,8 +547,6 @@ def init_columbia_eb(dir_name, reset=False):
     cfg.PARAMS['border'] = 10
     cfg.PARAMS['use_kcalving_for_inversion'] = True
     cfg.PARAMS['use_kcalving_for_run'] = True
-    cfg.PARAMS['use_winter_prcp_fac'] = False
-    cfg.PARAMS['use_temp_bias_from_file'] = False
     cfg.PARAMS['prcp_fac'] = 2.5
     cfg.PARAMS['baseline_climate'] = 'CRU'
     cfg.PARAMS['evolution_model'] = 'FluxBased'

@@ -630,6 +630,22 @@ def get_ref_mb_glaciers(gdirs, y0=None, y1=None):
     return ref_gdirs
 
 
+def get_rgi70C_year(rgi_id):
+    """Temporary function to fetch the rgi outline year for RGI70C ids.
+    """
+
+    key = 'RGI70C_rgi_year'
+    if key not in cfg.DATA:
+        from oggm.utils._downloads import file_downloader
+        fp = file_downloader('https://cluster.klima.uni-bremen.de/~oggm/'
+                             'ref_mb_params/oggm_v1.6/inv_rgi7/'
+                             'rgi7c_rgi_year_2025.1.csv')
+
+        cfg.DATA[key] = pd.read_csv(fp, index_col=0)['rgi_year']
+
+    return int(cfg.DATA[key].loc[rgi_id])
+
+
 def _chaikins_corner_cutting(line, refinements=5):
     """Some magic here.
 
@@ -2788,7 +2804,8 @@ class GlacierDirectory(object):
 
         if is_glacier_complex:
             rgi_entity['glac_name'] = ''
-            rgi_entity['src_date'] = '2000-01-01 00:00:00'
+            rgi_year = get_rgi70C_year(self.rgi_id)
+            rgi_entity['src_date'] = f'{rgi_year}-01-01 00:00:00'
             if 'dem_source' not in rgi_entity:
                 rgi_entity['dem_source'] = None
             rgi_entity['term_type'] = 9
@@ -2925,6 +2942,10 @@ class GlacierDirectory(object):
         rgi_date = int(rgi_datestr[0:4])
         if rgi_date < 0:
             rgi_date = RGI_DATE[self.rgi_region]
+        if rgi_date >= 2020:
+            log.warning(f'{self.rgi_id}: rgi_date {rgi_date} modified '
+                        'to 2019 for workflow reasons.')
+            rgi_date = 2019
         self.rgi_date = rgi_date
         # Root directory
         self.base_dir = os.path.normpath(base_dir)
@@ -3970,8 +3991,8 @@ def copy_to_basedir(gdir, base_dir=None, setup='run'):
     New glacier directories from the copied folders
     """
     base_dir = os.path.abspath(base_dir)
-    new_dir = os.path.join(base_dir, gdir.rgi_id[:8], gdir.rgi_id[:11],
-                           gdir.rgi_id)
+    new_dir = os.path.join(base_dir, gdir.rgi_id[:-6],
+                           gdir.rgi_id[:-3], gdir.rgi_id)
     if setup == 'run':
         paths = ['model_flowlines', 'inversion_params', 'outlines',
                  'mb_calib', 'climate_historical', 'glacier_grid',
