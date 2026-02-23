@@ -786,8 +786,6 @@ class TestStartFromV14(unittest.TestCase):
                                                   prepro_border=40)
 
         cfg.PARAMS['prcp_fac'] = 2.5
-        cfg.PARAMS['use_winter_prcp_fac'] = False
-        cfg.PARAMS['use_temp_bias_from_file'] = False
 
         n_intersects = 0
         for gdir in gdirs:
@@ -1094,10 +1092,9 @@ class TestPreproCLI(unittest.TestCase):
         odf['AREA'] = df.rgi_area_km2
         smb_oggm = np.average(odf['SMB'], weights=odf['AREA'])
 
-        dfh = 'table_hugonnet_regions_10yr_20yr_ar6period.csv'
-        dfh = pd.read_csv(utils.get_demo_file(dfh))
+        dfh = utils.get_geodetic_mb_dataframe(regional=True)
         dfh = dfh.loc[dfh.period == '2000-01-01_2020-01-01'].set_index('reg')
-        smb_ref = dfh.loc[11, 'dmdtda']
+        smb_ref = dfh.loc[11, 'dmdtda'] * 1000
         np.testing.assert_allclose(smb_oggm, smb_ref, atol=200)  # Whole Alps
 
         odf = pd.DataFrame(dfm.loc[2000:2019].mean(), columns=['SMB'])
@@ -1197,6 +1194,69 @@ class TestPreproCLI(unittest.TestCase):
                 np.testing.assert_allclose(ods[vn].sel(time=1990), 0)
 
     @pytest.mark.slow
+    def test_distributed_thickness_and_geotiff_export(self):
+
+        from oggm.cli.prepro_levels import run_prepro_levels
+        import rioxarray as rioxr
+
+        inter, rgidf = _read_shp()
+
+        wdir = os.path.join(self.testdir, 'wd')
+        utils.mkdir(wdir)
+        odir = os.path.join(self.testdir, 'my_levs')
+        topof = utils.get_demo_file('srtm_oetztal.tif')
+        np.random.seed(0)
+
+        # Test with distributed thickness enabled and geotiff export
+        run_prepro_levels(rgi_version='61', rgi_reg='11', border=20,
+                          output_folder=odir, working_dir=wdir, is_test=True,
+                          test_rgidf=rgidf, disable_mp=True,
+                          test_intersects_file=inter,
+                          test_topofile=topof,
+                          elev_bands=True,
+                          max_level=3,
+                          add_distributed_thickness=True,
+                          add_export_thickness_geotiff=True,
+                          override_params={}
+                          )
+
+        # Check that GeoTIFF files were created
+        thickness_dir = os.path.join(odir, 'RGI61', 'b_020', 'L3', 'summary',
+                                     'distributed_thickness')
+        assert os.path.isdir(thickness_dir)
+
+        # Check that files are organized in subfolders by RGI ID pattern
+        # Get first RGI ID to check structure
+        rid = rgidf.iloc[0].RGIId
+        # Files should be in thickness_dir/RGI61-11/RGI61-11.00/ for RGI6
+        # Note: base_dir_to_tar will tar the RGI61-11.00 subdirectories
+        subfolder_path = os.path.join(thickness_dir, rid[:8], rid[:11])
+        subfolder_tar = subfolder_path + '.tar'
+
+        # Either the directory or the tar should exist
+        assert os.path.isdir(subfolder_path) or os.path.isfile(subfolder_tar)
+
+        # If it's a tar file, we need to extract it first to check the contents
+        if os.path.isfile(subfolder_tar) and not os.path.isdir(subfolder_path):
+            import tarfile
+            with tarfile.open(subfolder_tar, 'r') as tar:
+                tar.extractall(path=os.path.dirname(subfolder_path))
+
+        # Check that at least one GeoTIFF file exists in the subfolder
+        geotiff_files = [f for f in os.listdir(subfolder_path) if f.endswith('.tif')]
+        assert len(geotiff_files) > 0
+
+        # Verify the GeoTIFF file has correct naming pattern (RGI_ID_distributed_thickness.tif)
+        for fname in geotiff_files:
+            assert fname.endswith('_distributed_thickness.tif')
+            assert fname.startswith('RGI')
+
+        # Check that we can read one of the GeoTIFF files and it has data
+        gtiff_path = os.path.join(subfolder_path, geotiff_files[0])
+        gtiff_ds = rioxr.open_rasterio(gtiff_path)
+        assert gtiff_ds.isel(band=0).sum() > 0
+
+    @pytest.mark.slow
     def test_full_run_cru_centerlines(self):
 
         from oggm.cli.prepro_levels import run_prepro_levels
@@ -1219,8 +1279,6 @@ class TestPreproCLI(unittest.TestCase):
                           centerlines=True,
                           override_params={'geodetic_mb_period': ref_period,
                                            'baseline_climate': 'CRU',
-                                           'use_winter_prcp_fac': False,
-                                           'use_temp_bias_from_file': False,
                                            'prcp_fac': 2.5,
                                            }
                           )
@@ -1263,10 +1321,9 @@ class TestPreproCLI(unittest.TestCase):
         odf['AREA'] = df.rgi_area_km2
         smb_oggm = np.average(odf['SMB'], weights=odf['AREA'])
 
-        dfh = 'table_hugonnet_regions_10yr_20yr_ar6period.csv'
-        dfh = pd.read_csv(utils.get_demo_file(dfh))
+        dfh = utils.get_geodetic_mb_dataframe(regional=True)
         dfh = dfh.loc[dfh.period == '2000-01-01_2020-01-01'].set_index('reg')
-        smb_ref = dfh.loc[11, 'dmdtda']
+        smb_ref = dfh.loc[11, 'dmdtda'] * 1000
         np.testing.assert_allclose(smb_oggm, smb_ref, atol=150)  # Whole Alps
 
         odf = pd.DataFrame(dfm.loc[2000:2009].mean(), columns=['SMB'])
@@ -1388,8 +1445,6 @@ class TestPreproCLI(unittest.TestCase):
                                                'baseline_climate': 'CRU',
                                                'evolution_model': evolution_model,
                                                'downstream_line_shape': downstream_line_shape,
-                                               'use_winter_prcp_fac': False,
-                                               'use_temp_bias_from_file': False,
                                                'prcp_fac': 2.5,
                                                })
 
@@ -1528,8 +1583,6 @@ class TestPreproCLI(unittest.TestCase):
 
         params = {'geodetic_mb_period': '2000-01-01_2010-01-01',
                   'baseline_climate': 'CRU',
-                  'use_winter_prcp_fac': False,
-                  'use_temp_bias_from_file': False,
                   'prcp_fac': 2.5,
                   'evolution_model': 'MassRedistributionCurve',
                   'downstream_line_shape': 'parabola',
@@ -1640,8 +1693,6 @@ class TestPreproCLI(unittest.TestCase):
                           logging_level='INFO', max_level=5, elev_bands=True,
                           override_params={'geodetic_mb_period': ref_period,
                                            'baseline_climate': 'CRU',
-                                           'use_winter_prcp_fac': False,
-                                           'use_temp_bias_from_file': False,
                                            'prcp_fac': 2.5,
                                            }
                           )
@@ -1842,8 +1893,6 @@ class TestBenchmarkCLI(unittest.TestCase):
                                        'use_multiprocessing': False,
                                        'geodetic_mb_period': '2000-01-01_2010-01-01',
                                        'baseline_climate': 'CRU',
-                                       'use_winter_prcp_fac': False,
-                                       'use_temp_bias_from_file': False,
                                        'prcp_fac': 2.5,
                                        })
 

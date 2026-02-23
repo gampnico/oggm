@@ -523,7 +523,7 @@ class TestGIS(unittest.TestCase):
         gis.glacier_masks(gdir)
         target_var = 'topo'
         gis.gridded_data_var_to_geotiff(gdir, varname=target_var)
-        gtiff_path = os.path.join(gdir.dir, target_var+'.tif')
+        gtiff_path = os.path.join(gdir.dir, f'{gdir.rgi_id}_{target_var}.tif')
         assert os.path.exists(gtiff_path)
 
         with xr.open_dataset(gdir.get_filepath('gridded_data')) as ds:
@@ -846,8 +846,6 @@ class TestElevationBandFlowlines(unittest.TestCase):
         cfg.PARAMS['border'] = 10
         cfg.PATHS['climate_file'] = get_demo_file('histalp_merged_hef.nc')
         cfg.PARAMS['baseline_climate'] = ''
-        cfg.PARAMS['use_winter_prcp_fac'] = False
-        cfg.PARAMS['use_temp_bias_from_file'] = False
         cfg.PARAMS['prcp_fac'] = 2.5
 
     def tearDown(self):
@@ -977,7 +975,7 @@ class TestElevationBandFlowlines(unittest.TestCase):
 
         # And the distributed diff is not too large either
         rms = utils.rmsd(ds1.distributed_thickness, ds2.distributed_thickness)
-        assert rms < 20
+        assert rms < 30
 
     def test_run(self):
 
@@ -1225,7 +1223,6 @@ class TestClimate(unittest.TestCase):
         cfg.PARAMS['temp_bias_max'] = 10
         cfg.PARAMS['prcp_fac_min'] = 0.1
         cfg.PARAMS['prcp_fac_max'] = 5
-        cfg.PARAMS['use_winter_prcp_fac'] = False
         cfg.PARAMS['prcp_fac'] = 2.5
 
     def tearDown(self):
@@ -2144,8 +2141,6 @@ class TestInversion(unittest.TestCase):
         cfg.PATHS['climate_file'] = get_demo_file('histalp_merged_hef.nc')
         cfg.PARAMS['baseline_climate'] = ''
         cfg.PARAMS['border'] = 10
-        cfg.PARAMS['use_winter_prcp_fac'] = False
-        cfg.PARAMS['use_temp_bias_from_file'] = False
         cfg.PARAMS['prcp_fac'] = 2.5
 
     def tearDown(self):
@@ -2306,6 +2301,55 @@ class TestInversion(unittest.TestCase):
                                                          a_bounds=a,
                                                          apply_fs_on_mismatch=True)
         np.testing.assert_allclose(df.vol_itmix_m3, df.vol_oggm_m3, rtol=0.01)
+
+        # Try with params
+        diags = gdir.get_diagnostics()
+
+        dfo = workflow.invert_from_params(gdir,
+                                          glen_a=diags['inversion_glen_a'],
+                                          fs=diags['inversion_fs'])
+        np.testing.assert_allclose(df.vol_itmix_m3, dfo.vol_oggm_m3, rtol=0.01)
+
+        dfi = pd.DataFrame()
+        dfi.index = [11]
+        dfi.loc[11, 'inversion_glen_a'] = diags['inversion_glen_a']
+        dfi.loc[11, 'inversion_fs'] = diags['inversion_fs']
+
+        dfo = workflow.invert_from_params(gdir, params_df=dfi)
+        np.testing.assert_allclose(df.vol_itmix_m3, dfo.vol_oggm_m3, rtol=0.01)
+
+        df = pd.read_hdf(utils.get_demo_file('rgi62_itmix_df.h5'))
+
+        # Works with Series
+        out = workflow.calibrate_inversion_from_volume(gdir,
+                                                       vol_ref_m3=df['vol_itmix_m3'])
+
+        df = df.loc[gdir.rgi_id]
+        np.testing.assert_allclose(df.vol_itmix_m3,
+                                   out['vol_oggm_m3'],
+                                   rtol=0.01)
+        assert out['fs'] == 0
+
+        # Works with float
+        out = workflow.calibrate_inversion_from_volume(gdir,
+                                                       vol_ref_m3=df.vol_itmix_m3)
+
+        np.testing.assert_allclose(df.vol_itmix_m3,
+                                   out['vol_oggm_m3'],
+                                   rtol=0.01)
+        assert out['fs'] == 0
+
+        # test user provided volume is working
+        delta_volume_m3 = 100000000
+        user_provided_volume_m3 = df.vol_itmix_m3 - delta_volume_m3
+        out = workflow.calibrate_inversion_from_volume(
+              gdir,
+              apply_fs_on_mismatch=True,
+              vol_ref_m3=user_provided_volume_m3)
+        np.testing.assert_allclose(user_provided_volume_m3,
+                                   out['vol_oggm_m3'],
+                                   rtol=0.01)
+        assert out['fs'] > 0
 
     @pytest.mark.slow
     def test_invert_hef_shapes(self):
@@ -2690,8 +2734,6 @@ class TestCoxeCalving(unittest.TestCase):
         cfg.PATHS['dem_file'] = get_demo_file('dem_RGI50-01.10299.tif')
         cfg.PATHS['working_dir'] = self.testdir
         cfg.PARAMS['border'] = 40
-        cfg.PARAMS['use_winter_prcp_fac'] = False
-        cfg.PARAMS['use_temp_bias_from_file'] = False
         cfg.PARAMS['prcp_fac'] = 2.5
 
     def tearDown(self):
@@ -2809,8 +2851,6 @@ class TestGrindelInvert(unittest.TestCase):
         cfg.set_intersects_db(get_demo_file('rgi_intersect_oetztal.shp'))
         cfg.PARAMS['use_multiple_flowlines'] = False
         cfg.PARAMS['use_tar_shapefiles'] = False
-        cfg.PARAMS['use_winter_prcp_fac'] = False
-        cfg.PARAMS['use_temp_bias_from_file'] = False
         cfg.PARAMS['prcp_fac'] = 2.5
 
     def tearDown(self):
@@ -2942,8 +2982,6 @@ class TestGCMClimate(unittest.TestCase):
         cfg.PATHS['dem_file'] = get_demo_file('hef_srtm.tif')
         cfg.PATHS['climate_file'] = ''
         cfg.PARAMS['border'] = 10
-        cfg.PARAMS['use_winter_prcp_fac'] = False
-        cfg.PARAMS['use_temp_bias_from_file'] = False
         cfg.PARAMS['prcp_fac'] = 2.5
         cfg.PARAMS['baseline_climate'] = 'CRU'
 

@@ -68,7 +68,7 @@ logger = logging.getLogger('.'.join(__name__.split('.')[:-1]))
 # The given commit will be downloaded from github and used as source for
 # all sample data
 SAMPLE_DATA_GH_REPO = 'OGGM/oggm-sample-data'
-SAMPLE_DATA_COMMIT = '9bfeb6dfea9513f790877819d9a6cbd2c7b61611'
+SAMPLE_DATA_COMMIT = '00fca8809eeb6e087ba34ac0e3e713e7b185eca3'
 
 # Recommended url for runs
 DEFAULT_BASE_URL = ('https://cluster.klima.uni-bremen.de/~oggm/gdirs/oggm_v1.6/'
@@ -1146,7 +1146,7 @@ def _get_prepro_gdir_unlocked(rgi_version, rgi_id, border, prepro_level,
     return tar_base
 
 
-def get_geodetic_mb_dataframe(file_path=None):
+def get_geodetic_mb_dataframe(file_path=None, regional=False):
     """Fetches the reference geodetic dataframe for calibration.
 
     Currently that's the data from Hughonnet et al 2021, corrected for
@@ -1158,6 +1158,8 @@ def get_geodetic_mb_dataframe(file_path=None):
     ----------
     file_path : str
         in case you have your own file to parse (check the format first!)
+    regional : bool
+        to fetch the regional file instead - this is a different format!
 
     Returns
     -------
@@ -1167,8 +1169,12 @@ def get_geodetic_mb_dataframe(file_path=None):
     # fetch the file online or read custom file
     if file_path is None:
         base_url = 'https://cluster.klima.uni-bremen.de/~oggm/geodetic_ref_mb/'
-        file_name = 'hugonnet_2021_ds_rgi60_pergla_rates_10_20_worldwide_filled.hdf'
-        file_path = file_downloader(base_url + file_name)
+        if regional:
+            file_name = 'hugonnet_2021_regional_avg.csv'
+            file_path = file_downloader(base_url + file_name)
+        else:
+            file_name = 'hugonnet_2021_ds_rgi60_pergla_rates_10_20_worldwide_filled.hdf'
+            file_path = file_downloader(base_url + file_name)
 
     # Did we open it yet?
     if file_path in cfg.DATA:
@@ -1177,7 +1183,7 @@ def get_geodetic_mb_dataframe(file_path=None):
     # If not let's go
     extension = os.path.splitext(file_path)[1]
     if extension == '.csv':
-        df = pd.read_csv(file_path, index_col=0)
+        df = pd.read_csv(file_path)
     elif extension == '.hdf':
         df = pd.read_hdf(file_path)
 
@@ -1191,10 +1197,12 @@ def get_geodetic_mb_dataframe(file_path=None):
     return df
 
 
-def get_temp_bias_dataframe(dataset='w5e5'):
-    """Fetches the temperature bias dataframe created by the OGGM>=v16 pre-calibration
-    (further explained in the OGGM mass balance tutorial:
-    https:// tutorials.oggm.org/stable/notebooks/tutorials/massbalance_calibration.html).
+def get_temp_bias_dataframe(dataset, regional=False, rgi_version='62'):
+    """Fetches the temperature bias dataframe.
+
+    The dataframe was created by the OGGM>=v16 pre-calibration
+    (further explained in the `OGGM mass balance tutorial <https://tutorials.oggm.org/stable/notebooks/tutorials/massbalance_calibration.html>`_
+
     The data preparation script is available at
     https://nbviewer.jupyter.org/urls/cluster.klima.uni-bremen.de/~oggm/gdirs/oggm_v1.6/calibration/1.6.1/prepare_bias_map.ipynb
 
@@ -1204,19 +1212,33 @@ def get_temp_bias_dataframe(dataset='w5e5'):
     Parameters
     ----------
     dataset : str
-        climate dataset used to choose temperature bias dataframe (currently only w5e5 available)
+        climate dataset used to choose temperature bias dataframe
+        (currently only w5e5 and era5 are available)
 
     Returns
     -------
     a DataFrame with the data.
     """
 
-    if dataset != 'w5e5':
+    if dataset not in ['w5e5', 'era5']:
         raise NotImplementedError(f'No such dataset available yet: {dataset}')
+    if rgi_version == '60':
+        rgi_version = '62'
+    if rgi_version not in ['62', '70G', '70C']:
+        raise NotImplementedError(f'RGI version not available yet: {rgi_version}')
 
     # fetch the file online
-    base_url = ('https://cluster.klima.uni-bremen.de/~oggm/ref_mb_params/oggm_v1.6/'
-                'w5e5_temp_bias_v2023.4.csv')
+    base_url = 'https://cluster.klima.uni-bremen.de/~oggm/ref_mb_params/oggm_v1.6/'
+    calibtype = 'regional' if regional else 'perglacier'
+    if rgi_version in ['70G', '70C']:
+        file_version = '1'
+    if rgi_version == '62':
+        file_version = '3' if regional else '2'
+        rgi_version = '6'
+    if dataset == 'w5e5':
+        base_url += f'w5e5_rgi{rgi_version}_{calibtype}_temp_bias_v2025.6.{file_version}.csv'
+    if dataset == 'era5':
+        base_url += f'era5_rgi{rgi_version}_{calibtype}_temp_bias_v2025.6.{file_version}.csv'
 
     file_path = file_downloader(base_url)
 
