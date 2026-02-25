@@ -15,7 +15,7 @@ are not trivial to install. The instructions below provide all the required
 details and should work on Linux and Mac OS. See :ref:`install-troubleshooting`
 if something goes wrong.
 
-OGGM is fully `tested`_ with Python versions 3.9 to 3.11 on Linux.
+OGGM is fully `tested`_ with Python versions 3.11 to 3.13 on Linux.
 We do not test OGGM automatically on Mac OSX, but it should probably run
 fine there as well.
 
@@ -33,9 +33,7 @@ fine there as well.
         installing-oggm-windows.rst
 
 
-For most users we recommend to
-install Python and the package dependencies with the :ref:`conda package manager <conda-install>`,
-in particular with ``mamba`` and ``conda-forge``.
+For most users we recommend to install Python and the package dependencies with the :ref:`conda package manager <conda-install>`, in particular with ``mamba`` and ``conda-forge``.
 
 .. _tested: https://github.com/OGGM/oggm/actions/workflows/run-tests.yml
 .. _conda: https://conda.io/projects/conda/en/latest/user-guide/index.html
@@ -46,46 +44,12 @@ in particular with ``mamba`` and ``conda-forge``.
 Dependencies
 ------------
 
-Here is a list of *all* dependencies of the OGGM model. If you want to use
-OGGM's numerical models only (i.e. no GIS or preprocessing tools), refer to
-`Install a minimal OGGM environment`_ below.
+A full installation of OGGM requires GDAL.
+The easiest way is:
+.. code-block:: bash
 
-Standard SciPy stack:
-    - numpy
-    - scipy
-    - scikit-image
-    - pillow
-    - matplotlib
-    - pandas
-    - xarray
-    - dask
-    - joblib
-
-Configuration file parsing tool:
-    - configobj
-
-I/O:
-    - netcdf4
-    - pytables
-
-GIS tools:
-    - shapely
-    - pyproj
-    - rasterio
-    - rioxarray
-    - geopandas
-
-Testing:
-    - pytest
-    - pytest-mpl (for image tests only: `OGGM fork <https://github.com/OGGM/pytest-mpl>`_ required)
-
-Other libraries:
-    - `salem <https://github.com/fmaussion/salem>`_
-    - `motionless <https://github.com/ryancox/motionless>`_
-
-Optional:
-    - progressbar2 (displays the download progress)
-    - bottleneck (might speed up some xarray operations)
+    sudo apt-get install gdal-bin libgdal-dev  # Linux (Debian distros)
+    brew install gdal  # MacOS
 
 .. _conda-install:
 
@@ -128,24 +92,39 @@ and replace all occurrences of ``conda`` with ``mamba`` in the instructions belo
 .. _miniconda: http://conda.pydata.org/miniconda.html
 .. _mambaforge: https://github.com/conda-forge/miniforge#mambaforge
 
-The simplest way: with an environment file
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The fastest way: `uv`
+~~~~~~~~~~~~~~~~~~~~~
 
-Copy the content of the file below into a file called ``environment.yml`` on your system
-(alternatively, right-click -> "save as" on `this link <https://raw.githubusercontent.com/OGGM/oggm/master/docs/recommended_env.yml>`_).
+If you are new to Python and want to get started with OGGM as quickly as possible, we recommend using `uv`_.
+You can install and run OGGM on a Jupyter server without polluting your base system or conda environment.
 
-.. include:: recommended_env.yml
-   :literal:
+.. _uv: _https://docs.astral.sh/uv/getting-started/installation/
 
-From the folder where you saved the file,  run ``mamba env create -f environment.yml``.
+First install `uv`:`
 
-This will create a new environment called ``oggm_env`` in your conda installation.
-For more information about conda environments, visit the
-`conda documentation on the topic <https://conda.io/projects/conda/en/latest/user-guide/concepts/environments.html>`_. Similarly,
-visit `conda documentation on environment files <https://docs.conda.io/projects/conda/en/latest/user-guide/tasks/manage-environments.html#creating-an-environment-from-an-environment-yml-file>`_
-for more information about how to create an environment from a ``yml`` file.
+.. code-block:: bash
+    wget -qO- https://astral.sh/uv/install.sh | sh
 
-Don't forget to :ref:`test-oggm` before using it!
+Launch a Jupyter notebook with OGGM installed in an isolated environment with:
+ .. code-block:: bash
+    uvx --with oggm jupyter lab
+
+.. note:: This will not pollute your base system or conda environment.
+
+
+The easiest way: `conda` and `pip`
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Create a conda environment:
+
+.. code-block:: bash
+
+    conda create -n oggm_312 python=3.12
+    conda activate oggm_312
+    pip install oggm  # minimal OGGM installation
+    pip install oggm[full]  # a more complete install with tests
+
+    uv pip install oggm  # if you have uv installed
 
 Install OGGM itself
 ~~~~~~~~~~~~~~~~~~~
