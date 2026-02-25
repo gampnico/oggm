@@ -4,7 +4,7 @@ build-backend = "uv_build"
 
 [project]
 name = "oggm"
-version = "0.1.0"
+version = "1.6.2"
 authors = [
 { name = "OGGM Contributors", email = "fabien.maussion@uibk.ac.at"}
 ]
