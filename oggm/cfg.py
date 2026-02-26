@@ -515,7 +515,6 @@ def initialize_minimal(file=None, logging_level='INFO', params=None):
     PARAMS['use_tar_shapefiles'] = cp.as_bool('use_tar_shapefiles')
     PARAMS['keep_multipolygon_outlines'] = cp.as_bool('keep_multipolygon_outlines')
     PARAMS['clip_tidewater_border'] = cp.as_bool('clip_tidewater_border')
-    PARAMS['dl_verify'] = cp.as_bool('dl_verify')
     PARAMS['use_kcalving_for_inversion'] = cp.as_bool('use_kcalving_for_inversion')
     PARAMS['use_kcalving_for_run'] = cp.as_bool('use_kcalving_for_run')
     PARAMS['calving_use_limiter'] = cp.as_bool('calving_use_limiter')
@@ -530,11 +529,7 @@ def initialize_minimal(file=None, logging_level='INFO', params=None):
     PARAMS['hydro_month_nh'] = cp.as_int('hydro_month_nh')
     PARAMS['hydro_month_sh'] = cp.as_int('hydro_month_sh')
     PARAMS['geodetic_mb_period'] = cp['geodetic_mb_period']
-    PARAMS['use_winter_prcp_fac'] = cp.as_bool('use_winter_prcp_fac')
-    PARAMS['use_temp_bias_from_file'] = cp.as_bool('use_temp_bias_from_file')
 
-    k = 'winter_prcp_fac_ab'
-    PARAMS[k] = [float(vk) for vk in cp.as_list(k)]
     k = 'ref_mb_valid_window'
     PARAMS[k] = [int(vk) for vk in cp.as_list(k)]
     k = 'free_board_marine_terminating'
@@ -574,20 +569,20 @@ def initialize_minimal(file=None, logging_level='INFO', params=None):
            'grid_dx_method', 'compress_climate_netcdf', 'by_bin_dx',
            'mp_processes', 'use_multiprocessing', 'clip_dem_to_zero',
            'topo_interp', 'use_compression', 'bed_shape', 'continue_on_error',
-           'use_multiple_flowlines', 'border', 'use_temp_bias_from_file',
+           'use_multiple_flowlines', 'border',
            'mpi_recv_buf_size', 'map_proj', 'evolution_model',
            'hydro_month_sh', 'hydro_month_nh', 'by_bin_bins',
            'use_intersects', 'filter_min_slope', 'clip_tidewater_border',
            'auto_skip_task', 'ref_mb_valid_window',
-           'rgi_version', 'dl_verify', 'use_mp_spawn', 'calving_use_limiter',
+           'rgi_version', 'use_mp_spawn', 'calving_use_limiter',
            'use_rgi_area', 'baseline_climate',
            'calving_line_extension', 'use_kcalving_for_run', 'lru_maxsize',
            'free_board_marine_terminating', 'use_kcalving_for_inversion',
            'error_when_glacier_reaches_boundaries', 'glacier_length_method',
            'use_inversion_params_for_run',
-           'tidewater_type', 'store_model_geometry', 'use_winter_prcp_fac',
+           'tidewater_type', 'store_model_geometry',
            'store_diagnostic_variables', 'store_fl_diagnostic_variables',
-           'geodetic_mb_period', 'store_fl_diagnostics', 'winter_prcp_fac_ab',
+           'geodetic_mb_period', 'store_fl_diagnostics',
            'prcp_fac', 'downstream_line_shape', 'keep_multipolygon_outlines']
     for k in ltr:
         cp.pop(k, None)
@@ -650,10 +645,6 @@ def initialize(file=None, logging_level='INFO', params=None):
                 except NameError:
                     pass
         DATA['dem_grids'] = grids
-
-    # Trigger a one time check of the hash file
-    from oggm.utils import get_dl_verify_data
-    get_dl_verify_data('dummy_section')
 
     # OK
     PARAMS.do_log = True
