@@ -1,5 +1,5 @@
 [build-system]
-requires = ["uv_build >= 0.9.28, <0.11.0", "uv-dynamic-versioning"]
+requires = ["hatchling >= 1.26", "hatch-vcs"]
 build-backend = "hatchling.build"
 
 [project]
@@ -16,7 +16,6 @@ license-files = ["LICENSE.txt"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Science/Research",
-    "License :: OSI Approved :: BSD License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
@@ -74,6 +73,67 @@ tests = [
     "pytest-mpl",
 ]
 
+[project.urls]
+"Homepage" = "https://oggm.org"
+"Bug Tracker" = "https://github.com/OGGM/oggm/issues"
+"Documentation" = "https://docs.oggm.org/"
+
+[project.scripts]
+oggm_prepro = "oggm.cli.prepro_levels:main"
+oggm_benchmark = "oggm.cli.benchmark:main"
+oggm_netrc_credentials = "oggm.cli.netrc_credentials:cli"
+"pytest.oggm" = "oggm.tests.__main__:main"
+
+[tool.hatch.build.targets.sdist]
+packages = ["oggm"]
+exclude = [
+    "docs",
+    ".coverage.*"
+]
+include = [
+    "pytest.ini",
+    "oggm/params.cfg",
+    "oggm/data/demo_glaciers.csv",
+    "oggm/data/AntarcticDEM_wgs84.json",
+    "oggm/data/arcticdem_mosaic_100m_v3.0.json",
+    "oggm/data/gimpdem_90m_v01.1.json",
+    "oggm/data/REMA_100m_dem.json",
+]
+# fallback if include group doesn't work as intended
+force-include = {"pytest.ini" = "pytest.ini"} 
+
+# [tool.hatch.build.targets.sdist.force-include]
+# "pytest.ini" = "pytest.ini"
+
+[tool.hatch.build.targets.wheel]
+packages = ["oggm"]
+include = [
+    "pytest.ini",
+    "oggm/params.cfg",
+    "oggm/data/demo_glaciers.csv",
+    "oggm/data/AntarcticDEM_wgs84.json",
+    "oggm/data/arcticdem_mosaic_100m_v3.0.json",
+    "oggm/data/gimpdem_90m_v01.1.json",
+    "oggm/data/REMA_100m_dem.json",
+]
+# fallback if include group doesn't work as intended
+force-include = {"pytest.ini" = "pytest.ini"} 
+
+[tool.hatch.envs.default]
+env-vars-file = ".env"
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.hatch.version]
+path = "oggm/__init__.py"
+fallback-version = "1.6.3"
+source = "vcs"
+# workaround for potential hatchling bug
+# pattern = "(?i)^(__version__|VERSION)(?:: *str)? *= *([\\'\"])v?(?P<version>.+?)\\2"
+
+# This section is for uv, but may also used by hatchling when building the package
+
 [dependency-groups]
 build = [
     "build>=1.4.0",
@@ -120,33 +180,6 @@ tests = [
     "pytest",
     "pytest-mpl",
 ]
-
-
-[project.urls]
-"Homepage" = "https://oggm.org"
-"Bug Tracker" = "https://github.com/OGGM/oggm/issues"
-"Documentation" = "https://docs.oggm.org/"
-
-[project.scripts]
-oggm_prepro = "oggm.cli.prepro_levels:main"
-oggm_benchmark = "oggm.cli.benchmark:main"
-oggm_netrc_credentials = "oggm.cli.netrc_credentials:cli"
-"pytest.oggm" = "oggm.tests.__main__:main"
-
-[tool.hatch.build.targets.sdist]
-packages = ["oggm"]
-
-[tool.hatch.build.targets.wheel]
-packages = ["dtcg"]
-
-[tool.hatch.envs.default]
-env-vars-file = ".env"
-
-[tool.hatch.metadata]
-allow-direct-references = true
-
-[tool.hatch.version]
-source = "uv-dynamic-versioning"
 
 [tool.uv.sources]
 pytest-mpl = { git = "https://github.com/OGGM/pytest-mpl" }
