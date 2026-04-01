@@ -111,12 +111,23 @@ Enhancements
 - Added a new way to calibrate the mass balance model with MB
   timeseries (:pull:`1827`).
   By `Chloe Hancock <https://github.com/chloe-hancock>`_
+- SemiImplicitModel (the default dynamical solver in OGGM) now also
+  supports calving like FluxBasedModel does (:pull:`1858`). Inversion
+  with calving remains poorly supported / untested since v1.6 series,
+  but this is an important step to re-offer a full calving workflow in
+  OGGM core. By `Beatriz Recinos <https://github.com/bearecinos>`_
 - Refactored installation. Pip installations now accept optional dependencies,
   and no longer requires dedicated yaml files. Added support for `uv`.
   (:pull:`1849`).
   By `Nicolas Gampierakis <https://github.com/gampnico>`_.
 - Added CI workflow for new releases (:pull:`1867`).
   By `Nicolas Gampierakis <https://github.com/gampnico>`_
+- Added the option to compute hypsometries as part of the preprocessing CLI.
+  Previously this would have been a separate step (:pull:`1872`).
+  By `Fabien Maussion <https://github.com/fmaussion>`_
+- Generated and documented new preprocessed directories including
+  contributions from avalanches (:pull:`1877`).
+  By `Marin Kneib <https://github.com/MarinKneib>`_
 
 Bug fixes
 ~~~~~~~~~
@@ -147,6 +158,9 @@ Bug fixes
   By `Fabien Maussion <https://github.com/fmaussion>`_
 - Fixed ``ModuleNotFoundError`` caused by calling ``distutils`` which has been
   deprecated since Python 3.12. Reimplements ``strtobool`` natively.
+  By `Nicolas Gampierakis <https://github.com/gampnico>`_.
+- Removed deprecated ``pkg_resources`` module as this was removed from
+  Python 3.12 and setuptools 82.0 (:pull:`1875`).
   By `Nicolas Gampierakis <https://github.com/gampnico>`_.
 
 Breaking changes
