@@ -14,7 +14,7 @@ Enhancements
   By `Nicolas Gampierakis <https://github.com/gampnico>`_.
 - New global task ``calibrate_inversion_from_ref_table`` generalises
   ``calibrate_inversion_from_consensus`` to calibrate the ice thickness
-  inversion against an arbitrary reference volume table (given as a DataFrame,
+  inversion against an arbitrary reference volume table (given as a DataFrame, 
   a path or a URL). By default it now uses the IceBoost v2 products, with the
   RGI6 or RGI7 table selected automatically from the glacier directories.
   ``calibrate_inversion_from_consensus`` is deprecated but still available: it
@@ -215,6 +215,8 @@ Bug fixes
   calling the tasks directly is unaffected. This has been applied to all
   "run_*" tasks to avoid memory issues (see "breaking changes") (:pull:`1977`).
   By `Fabien Maussion <https://github.com/fmaussion>`_
+- Multiple fixes to the test suite, missing assertions, test logic (:pull:`1960`).
+  By `Nicolas Gampierakis <http://github.com/gampnico>`_.
 
 Breaking changes
 ~~~~~~~~~~~~~~~~
