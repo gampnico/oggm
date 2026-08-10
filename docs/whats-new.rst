@@ -51,6 +51,21 @@ Enhancements
   arbitrary custom climate dataset instead of the hardcoded w5e5/era5 files
   (:pull:`1941`).
   By `Fabien Maussion <https://github.com/fmaussion>`_
+- The temperature bias prior file used by the `informed_threestep` calibration
+  can now be created from the command line, instead of with a notebook. The new
+  ``oggm_temp_bias`` command (and the underlying
+  ``utils.compute_temp_bias_dataframe``) summarizes the per-glacier biases of a
+  `temp_melt` preprocessing run per climate grid point and writes the csv file
+  (plus diagnostic plots) which can then be fed back to `oggm_prepro` with
+  ``--temp-bias-file-path``. The climate grid is inferred from the glacier
+  statistics themselves, so this works with any (custom) climate dataset.
+  ``oggm_prepro`` also gets a ``--temp-bias-run`` preset for the preprocessing
+  step itself: it stops at level 3, skips the ice thickness inversion and
+  writes nothing but the level 3 glacier statistics file, which is the input of
+  ``oggm_temp_bias`` (it requires ``--mb-calibration-strategy temp_melt`` or
+  ``temp_melt_regional`` to be set explicitly).
+  New utility function ``utils.weighted_quantile_1d``.
+  By `Fabien Maussion <https://github.com/fmaussion>`_
 - Test durations are now visible in Actions logs (:pull:`1920`).
   By `Nicolas Gampierakis <https://github.com/gampnico>`_
 - New kwarg `spinup_periods_to_try` in `run_dynamic_spinup` to be able to
@@ -128,6 +143,32 @@ Enhancements
 - Added two new CI test environments, ``models_dynamics`` and ``models_mb``,
   to parallelise test execution (:pull:`1907`).
   By `Patrick Schmitt <https://github.com/pat-schmitt>`_
+- ``run_with_hydro`` now fully supports mass balance models with surface type
+  tracking (e.g. ``SfcTypeTIModel``). The mass-conservation correction of the
+  on-glacier melt is now based on the total glacier mass of the dynamical run
+  (``mass_kg``, which includes the snow and firn buckets with their lower
+  densities) instead of the ice volume times a fixed ice density. For this,
+  'mass' is now required in ``cfg.PARAMS['store_diagnostic_variables']`` (it
+  is part of the defaults). For mass balance models with surface type
+  tracking, the on-glacier melt is additionally split into the new default
+  output variables ``snow_melt_on_glacier`` (buckets younger than one year),
+  ``firn_melt_on_glacier`` and ``ice_melt_on_glacier``, which always sum up
+  to ``melt_on_glacier`` (for other mass balance models they are NaN). For
+  this, ``SfcTypeTIModel`` now tracks the melt per surface type (new
+  ``get_annual_melt`` and ``get_monthly_melt`` methods and ``snow_melt``,
+  ``firn_melt`` and ``ice_melt`` properties), whereby pure aging of the
+  buckets is never counted as melt (:pull:`1959`).
+  By `Patrick Schmitt <https://github.com/pat-schmitt>`_
+- New ``store_hydro_output`` kwarg in ``run_prepro_levels`` (and
+  ``--store-hydro-output`` CLI flag) to also compute and store hydrological
+  model output during preprocessing, via ``run_with_hydro``. The accompanying
+  ``store_monthly_hydro`` kwarg (and ``--store-monthly-hydro`` CLI flag,
+  default ``True``) additionally stores this hydrological output at monthly
+  resolution. The new ``ref_area_yr`` kwarg (and ``--ref-area-yr`` CLI flag)
+  lets users force the hydrological reference area to the glacier state of a
+  given simulation year, instead of the default largest area during the
+  simulation period (:pull:`1965`).
+  By `Patrick Schmitt <https://github.com/pat-schmitt>`_
 
 Bug fixes
 ~~~~~~~~~
@@ -152,10 +193,28 @@ Bug fixes
 - Fixed a bug in ``compile_to_netcdf`` decorator, avoiding to raise an error if
   a single chunk failes (:pull:`1954`).
   By Copilot and `Patrick Schmitt <https://github.com/pat-schmitt>`_
+- Fixed a multiprocessing memory blowup in large ``execute_entity_task`` runs
+  (e.g. ``oggm_prepro`` on tens of thousands of glaciers): ``GlacierDirectory``
+  no longer re-serializes its ``settings``/``observations`` on every task
+  dispatched to a worker process. They are now dropped before pickling and
+  rebuilt from disk in the worker instead (:pull:`1967`).
+  By `Patrick Schmitt <https://github.com/pat-schmitt>`_
 - Model constructors no longer silently persist a non-default ``temp_melt`` to
   the gdir settings file. ``check_calib_params`` now validates the effective
-  model parameters instead of the settings file, and calibration tasks record ``mb_global_params`` from the model used.
+  model parameters instead of the settings file, and calibration tasks record
+  ``mb_global_params`` from the model used (:pull:`1961`).
   By `Nicolas Gampierakis <https://github.com/gampnico>`_
+- ``SemiImplicitModel`` now reads its calving parameters from the model settings
+  instead of ``cfg.PARAMS``, so runs using a ``settings_filesuffix`` are no
+  longer silently calving with the default configuration. ``do_calving`` is now
+  also ignored for non-tidewater glaciers (:pull:`1961`).
+  By `Nicolas Gampierakis <https://github.com/gampnico>`_.
+- Entity tasks can now declare ``@entity_task(log, workflow_return_value=False)``,
+  which leads to ``execute_entity_task`` discarding the tasks output when
+  multiprocessing. The caller can still pass ``return_value=True`` explicitly, and
+  calling the tasks directly is unaffected. This has been applied to all
+  "run_*" tasks to avoid memory issues (see "breaking changes") (:pull:`1977`).
+  By `Fabien Maussion <https://github.com/fmaussion>`_
 
 Breaking changes
 ~~~~~~~~~~~~~~~~
@@ -228,6 +287,12 @@ Breaking changes
 - Renamed ``rho`` to ``ice_density`` at several locations, to not get confused
   with ``snow_density``, intoduced with ``SfcTypeTIModel`` (:pull:`1899`).
   By `Patrick Schmitt <https://github.com/pat-schmitt>`_
+- ``workflow.execute_entity_task`` no longer collects the model objects
+  returned by the ``run_*`` tasks. With multiprocessing this would
+  run the main process out of memory on large RGI regions (:pull:`1977`).
+  By `Fabien Maussion <https://github.com/fmaussion>`_
+
+
 
 v1.6.3 (April 13, 2026)
 -----------------------
