@@ -2730,14 +2730,14 @@ class SemiImplicitModel(FlowlineModel):
 
         # Calving params
         if do_calving is None:
-            do_calving = cfg.PARAMS['use_kcalving_for_run']
+            do_calving = self.settings['use_kcalving_for_run']
         self.calving_law = calving_law
-        self.do_calving = do_calving
+        self.do_calving = do_calving and self.is_tidewater
         if calving_k is None:
-            calving_k = cfg.PARAMS['calving_k']
+            calving_k = self.settings['calving_k']
         self.calving_k = calving_k / cfg.SEC_IN_YEAR
         if calving_use_limiter is None:
-            calving_use_limiter = cfg.PARAMS['calving_use_limiter']
+            calving_use_limiter = self.settings['calving_use_limiter']
         self.calving_use_limiter = calving_use_limiter
 
         # Flux gate bookkeeping
@@ -3830,7 +3830,7 @@ def decide_evolution_model(gdir=None, evolution_model=None):
     return evolution_model
 
 
-@entity_task(log)
+@entity_task(log, workflow_return_value=False)
 def flowline_model_run(gdir, settings_filesuffix='',
                        output_filesuffix=None, mb_model=None,
                        ys=None, ye=None, zero_initial_glacier=False,
@@ -4059,7 +4059,7 @@ def flowline_model_run(gdir, settings_filesuffix='',
     return model
 
 
-@entity_task(log)
+@entity_task(log, workflow_return_value=False)
 def run_random_climate(gdir, settings_filesuffix='',
                        nyears=1000, y0=None, halfsize=15,
                        ys=None, ye=None,
@@ -4195,7 +4195,7 @@ def run_random_climate(gdir, settings_filesuffix='',
                               **kwargs)
 
 
-@entity_task(log)
+@entity_task(log, workflow_return_value=False)
 def run_constant_climate(gdir, settings_filesuffix='',
                          nyears=1000, y0=None, halfsize=15,
                          ys=None, ye=None,
@@ -4319,7 +4319,7 @@ def run_constant_climate(gdir, settings_filesuffix='',
                               **kwargs)
 
 
-@entity_task(log)
+@entity_task(log, workflow_return_value=False)
 def run_from_climate_data(gdir, settings_filesuffix='',
                           ys=None, ye=None, min_ys=None, max_ys=None,
                           fixed_geometry_spinup_yr=None,
