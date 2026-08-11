@@ -163,15 +163,15 @@ class TestPreproHelpers:
     def test_hef_masks_centerlines(self, hef_entity):
         gdir = _hef_masks_centerlines(self.testdir, hef_entity)
         assert gdir.has_file("gridded_data")
-        assert len(gdir.read_pickle("centerlines")) == 3
+        assert len(gdir.read_store("centerlines")) == 3
 
     def test_hef_flowlines(self, hef_entity):
         gdir = _hef_flowlines(self.testdir, hef_entity)
-        assert len(gdir.read_pickle("inversion_flowlines")) == 3
+        assert len(gdir.read_store("inversion_flowlines")) == 3
 
     def test_hef_widths(self, hef_entity):
         gdir = _hef_widths(self.testdir, hef_entity)
-        cls = gdir.read_pickle("inversion_flowlines")
+        cls = gdir.read_store("inversion_flowlines")
         # width correction populates per-flowline areas summing to the glacier
         area_km2 = np.sum([cl.area_km2 for cl in cls])
         np.testing.assert_allclose(area_km2, gdir.rgi_area_km2, rtol=0.05)
@@ -969,7 +969,7 @@ class TestElevationBandFlowlines:
         """Builds elevation-band flowlines down to inversion_flowlines"""
         gdir = self._hef_elev_band(self.testdir, hef_entity)
         assert gdir.has_file("elevation_band_flowline")
-        fls = gdir.read_pickle("inversion_flowlines")
+        fls = gdir.read_store("inversion_flowlines")
         assert len(fls) >= 1
 
     def test_irregular_grid(self, hef_entity):
