@@ -1384,7 +1384,7 @@ def parse_args(args):
         except (TypeError, ValueError):
             raise InvalidParamsError(
                 '--dynamic-spinup-periods-to-try takes spinup periods in '
-                "years, or the single value 'none', but got "
+                'years, or the single value "none", but got '
                 f'{periods_to_try}!'
             )
 
@@ -1420,7 +1420,7 @@ def parse_args(args):
                 dynamic_spinup=dynamic_spinup,
                 ref_mb_err_scaling_factor=args.ref_mb_err_scaling_factor,
                 dynamic_spinup_start_year=args.dynamic_spinup_start_year,
-                dynamic_spinup_periods_to_try=args.dynamic_spinup_periods_to_try,
+                dynamic_spinup_periods_to_try=periods_to_try,
                 mb_model_class=args.mb_model_class,
                 mb_calibration_strategy=args.mb_calibration_strategy,
                 geodetic_mb_file_path=args.geodetic_mb_file_path,

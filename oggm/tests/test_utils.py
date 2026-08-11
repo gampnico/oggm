@@ -1686,6 +1686,12 @@ class TestPreproCLI:
         kwargs = prepro_levels.parse_args(['--rgi-reg', '1',
                                            '--map-border', '160',
                                            '--dynamic-spinup-periods-to-try',
+                                           '30',
+                                           ])
+        assert kwargs['dynamic_spinup_periods_to_try'] == [30]
+        kwargs = prepro_levels.parse_args(['--rgi-reg', '1',
+                                           '--map-border', '160',
+                                           '--dynamic-spinup-periods-to-try',
                                            '30', '40',
                                            ])
         assert kwargs['dynamic_spinup_periods_to_try'] == [30, 40]
@@ -1712,8 +1718,7 @@ class TestPreproCLI:
                                            ])
         assert kwargs['temp_bias_run'] is True
 
-        # The boolean flags are on/off switches: a value is an error, not a
-        # truthy string silently switching them on
+        # passed values should be treated as errors
         for flag in ['--elev-bands', '--centerlines', '--skip-inversion',
                      '--keep-dem-folders', '--add-consensus-thickness',
                      '--add-itslive-velocity', '--add-millan-thickness',
@@ -1731,8 +1736,7 @@ class TestPreproCLI:
                                           flag, 'whatever',
                                           ])
 
-        # --store-monthly-hydro defaults to True, so it needs its negated
-        # counterpart to be switchable at all
+        # --store-monthly-hydro defaults to True, so really dirty fix here 
         kwargs = prepro_levels.parse_args(['--rgi-reg', '1',
                                            '--map-border', '160',
                                            '--no-store-monthly-hydro',
