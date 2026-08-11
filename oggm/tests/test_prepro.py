@@ -1136,7 +1136,7 @@ class TestGeometry(unittest.TestCase):
 
         # most widths should be positive, and roughly sum to glacier area
         area = 0.0
-        cls = gdir.read_pickle("inversion_flowlines")
+        cls = gdir.read_store("inversion_flowlines")
         assert len(cls) > 0
         for cl in cls:
             assert len(cl.widths) == cl.nx

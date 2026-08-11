@@ -433,6 +433,37 @@ def run_prepro_levels(rgi_version=None, rgi_reg=None, border=None,
         log.workflow('OGGM prepro_levels is done! Time needed: '
                      '{:02d}:{:02d}:{:02d}'.format(int(h), int(m), int(s)))
 
+    def _write_level_tars(level, gdirs, deltas=True):
+        """Tar the glacier directories of a level into the output folder.
+
+        With `deltas`, the per-glacier delta manifests are written first and
+        each tar ships only what the level changed. `deltas=False` tars the
+        directories whole (L0 and L5, whose manifests are written by their
+        caller, and the multi-DEM L1 branch, which has none).
+
+        A `temp_bias_run` ships no glacier directories at all, so this is
+        then a no-op.
+        """
+        if temp_bias_run:
+            return
+        log.workflow(f'L{level} done. Writing to tar...')
+        entries = gdirs
+        if deltas:
+            entries = _delta_tar_entries(
+                gdirs=gdirs,
+                level=level,
+                states=manifest_states,
+                border=border,
+                rgi_version=rgi_version,
+                dataset_tag=dataset_tag,
+                dataset_id=dataset_id,
+            )
+        level_base_dir = Path(output_base_dir) / f'L{level}'
+        workflow.execute_entity_task(
+            utils.gdir_to_tar, entries, delete=False, base_dir=level_base_dir
+        )
+        utils.base_dir_to_tar(level_base_dir)
+
     # Local paths
     if override_params is None:
         override_params = {}
@@ -616,25 +647,23 @@ def run_prepro_levels(rgi_version=None, rgi_reg=None, border=None,
 
         # L0 OK - compress all in output directory
         if not temp_bias_run:
-            log.workflow('L0 done. Writing to tar...')
             for gdir in gdirs:
-            # L0 is the root artifact so fully shipped
-            utils.write_level_manifest(
-                gdir,
-                level=0,
-                prev_state={},
-                dataset_tag=dataset_tag,
-                dataset_id=dataset_id,  # save an extra computation
-                requires=[],
-                includes_levels=[0],
-                border=border,
-                rgi_version=rgi_version,
-            )
-            manifest_states[gdir.rgi_id] = utils.snapshot_gdir_state(gdir.dir)
-        level_base_dir = Path(output_base_dir) / 'L0'
-        workflow.execute_entity_task(utils.gdir_to_tar, gdirs, delete=False,
-                                     base_dir=level_base_dir)
-        utils.base_dir_to_tar(level_base_dir)
+                # L0 is the root artifact so fully shipped
+                utils.write_level_manifest(
+                    gdir,
+                    level=0,
+                    prev_state={},
+                    dataset_tag=dataset_tag,
+                    dataset_id=dataset_id,  # save an extra computation
+                    requires=[],
+                    includes_levels=[0],
+                    border=border,
+                    rgi_version=rgi_version,
+                )
+                manifest_states[gdir.rgi_id] = utils.snapshot_gdir_state(
+                    gdir.dir
+                )
+        _write_level_tars(0, gdirs, deltas=False)
         if max_level == 0:
             _time_log()
             return
@@ -704,13 +733,7 @@ def run_prepro_levels(rgi_version=None, rgi_reg=None, border=None,
                                                  gdirs, source=dem_source)
 
             # L1 OK - compress all in output directory
-            if not temp_bias_run:
-                log.workflow('L1 done. Writing to tar...')
-                level_base_dir = Path(output_base_dir) / 'L1'
-                workflow.execute_entity_task(utils.gdir_to_tar, gdirs,
-                                             delete=False,
-                                             base_dir=level_base_dir)
-                utils.base_dir_to_tar(level_base_dir)
+            _write_level_tars(1, gdirs, deltas=False)
 
             _time_log()
             return
@@ -741,22 +764,7 @@ def run_prepro_levels(rgi_version=None, rgi_reg=None, border=None,
         utils.compile_glacier_statistics(gdirs, path=opath)
 
         # L1 OK - compress all in output directory
-        if not temp_bias_run:
-            log.workflow('L1 done. Writing to tar...')
-            entries = _delta_tar_entries(
-            gdirs=gdirs,
-            level=1,
-            states=manifest_states,
-            border=border,
-            rgi_version=rgi_version,
-            dataset_tag=dataset_tag,
-            dataset_id=dataset_id,
-        )
-        level_base_dir = Path(output_base_dir) / 'L1'
-        workflow.execute_entity_task(
-            utils.gdir_to_tar, entries, delete=False, base_dir=level_base_dir
-        )
-        utils.base_dir_to_tar(level_base_dir)
+        _write_level_tars(1, gdirs)
         if max_level == 1:
             _time_log()
             return
@@ -923,22 +931,7 @@ def run_prepro_levels(rgi_version=None, rgi_reg=None, border=None,
                                              path=opath)
 
         # L2 OK - compress all in output directory
-        if not temp_bias_run:
-            log.workflow('L2 done. Writing to tar...')
-            entries = _delta_tar_entries(
-            gdirs=gdirs,
-            level=2,
-            states=manifest_states,
-            border=border,
-            rgi_version=rgi_version,
-            dataset_tag=dataset_tag,
-            dataset_id=dataset_id,
-        )
-        level_base_dir = Path(output_base_dir) / 'L2'
-        workflow.execute_entity_task(
-            utils.gdir_to_tar, entries, delete=False, base_dir=level_base_dir
-        )
-        utils.base_dir_to_tar(level_base_dir)
+        _write_level_tars(2, gdirs)
         if max_level == 2:
             _time_log()
             return
@@ -1059,21 +1052,7 @@ def run_prepro_levels(rgi_version=None, rgi_reg=None, border=None,
                                                   mb_model_class=mb_model_class)
 
         # L3 OK - compress all in output directory
-        log.workflow('L3 done. Writing to tar...')
-        entries = _delta_tar_entries(
-            gdirs=gdirs,
-            level=3,
-            states=manifest_states,
-            border=border,
-            rgi_version=rgi_version,
-            dataset_tag=dataset_tag,
-            dataset_id=dataset_id,
-        )
-        level_base_dir = Path(output_base_dir) / 'L3'
-        workflow.execute_entity_task(
-            utils.gdir_to_tar, entries, delete=False, base_dir=level_base_dir
-        )
-        utils.base_dir_to_tar(level_base_dir)
+        _write_level_tars(3, gdirs)
         if max_level == 3:
             _time_log()
             return
@@ -1207,21 +1186,7 @@ def run_prepro_levels(rgi_version=None, rgi_reg=None, border=None,
                                       path=opath)
 
         # L4 OK - compress all in output directory
-        log.workflow('L4 done. Writing to tar...')
-        entries = _delta_tar_entries(
-            gdirs=gdirs,
-            level=4,
-            states=manifest_states,
-            border=border,
-            rgi_version=rgi_version,
-            dataset_tag=dataset_tag,
-            dataset_id=dataset_id,
-        )
-        level_base_dir = Path(output_base_dir) / 'L4'
-        workflow.execute_entity_task(
-            utils.gdir_to_tar, entries, delete=False, base_dir=level_base_dir
-        )
-        utils.base_dir_to_tar(level_base_dir)
+        _write_level_tars(4, gdirs)
 
         sum_dir_L4 = sum_dir
 
@@ -1265,7 +1230,6 @@ def run_prepro_levels(rgi_version=None, rgi_reg=None, border=None,
                                               setup='run/spinup')
 
     # L5 OK - compress all in output directory
-    log.workflow('L5 done. Writing to tar...')
     for gdir in mini_gdirs:
         # The mini run bundle is self-sufficient, so shipped as standalone
         utils.write_level_manifest(
@@ -1280,10 +1244,7 @@ def run_prepro_levels(rgi_version=None, rgi_reg=None, border=None,
             border=border,
             rgi_version=rgi_version,
         )
-    level_base_dir = Path(output_base_dir) / 'L5'
-    workflow.execute_entity_task(utils.gdir_to_tar, mini_gdirs, delete=False,
-                                 base_dir=level_base_dir)
-    utils.base_dir_to_tar(level_base_dir)
+    _write_level_tars(5, mini_gdirs, deltas=False)
 
     _time_log()
 
