@@ -3577,13 +3577,19 @@ class GlacierDirectory(object):
                                 self.rgi_id[:-3], self.rgi_id)
 
         # Do we have to extract the files first?
-        if (reset or from_tar) and os.path.exists(self.dir):
+        # This has to happen before the settings are read below.
+        if (reset or from_tar) and os.path.exists(self.dir) and not append:
             shutil.rmtree(self.dir)
 
         if from_tar:
             if from_tar is True:
                 from_tar = self.dir + '.tar.gz'
-            robust_tar_extract(from_tar, self.dir, delete_tar=delete_tar)
+            _extract_tars(
+                from_tar,
+                self.dir,
+                delete_tar=delete_tar,
+                finalize=True if append else None,
+            )
             write_shp = False
         else:
             mkdir(self.dir)
@@ -3761,30 +3767,6 @@ class GlacierDirectory(object):
                         'to 2019 for workflow reasons.')
             rgi_date = 2019
         self.rgi_date = rgi_date
-        # Root directory
-        self.base_dir = os.path.normpath(base_dir)
-        self.dir = os.path.join(self.base_dir, self.rgi_id[:-6],
-                                self.rgi_id[:-3], self.rgi_id)
-
-        # Do we have to extract the files first?
-        if (reset or from_tar) and os.path.exists(self.dir) and not append:
-            shutil.rmtree(self.dir)
-
-        if from_tar:
-            if from_tar is True:
-                from_tar = self.dir + '.tar.gz'
-            _extract_tars(
-                from_tar,
-                self.dir,
-                delete_tar=delete_tar,
-                finalize=True if append else None,
-            )
-            write_shp = False
-        else:
-            mkdir(self.dir)
-
-        if not os.path.isdir(self.dir):
-            raise RuntimeError('GlacierDirectory %s does not exist!' % self.dir)
 
         # logging file
         self.logfile = os.path.join(self.dir, 'log.txt')

@@ -1336,6 +1336,36 @@ class TestStartFromTar:
             assert gdir.rgi_area_km2 > 0
         workflow.execute_entity_task(tasks.glacier_masks, gdirs)
 
+    def _entity_gdir_tar(self):
+        entity = self.rgidf.iloc[0]
+        gdir = oggm.GlacierDirectory(entity)
+        return entity, utils.gdir_to_tar(gdir)
+
+    def test_from_entity_from_tar_delete_tar(self):
+        entity, tarf = self._entity_gdir_tar()
+
+        gdir = oggm.GlacierDirectory(entity, from_tar=True, delete_tar=True)
+        assert gdir.rgi_area_km2 > 0
+        assert not os.path.exists(tarf)
+
+    def test_from_entity_from_tar_list(self):
+        entity, tarf = self._entity_gdir_tar()
+
+        gdir = oggm.GlacierDirectory(entity, from_tar=[tarf])
+        assert gdir.rgi_area_km2 > 0
+
+    def test_from_entity_from_tar_append_keeps_dir(self):
+        entity, tarf = self._entity_gdir_tar()
+
+        gdir = oggm.GlacierDirectory(entity, from_tar=[tarf])
+        marker = os.path.join(gdir.dir, "marker.txt")
+        with open(marker, "w") as f:
+            f.write("keep me")
+
+        gdir = oggm.GlacierDirectory(entity, from_tar=[tarf], append=True)
+        assert os.path.exists(marker)
+        assert gdir.rgi_area_km2 > 0
+
     def test_to_and_from_tar_string(self):
 
         test_dir = cfg.PATHS["working_dir"]
