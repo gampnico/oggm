@@ -180,12 +180,13 @@ Enhancements
 - New ``store_hydro_output`` kwarg in ``run_prepro_levels`` (and
   ``--store-hydro-output`` CLI flag) to also compute and store hydrological
   model output during preprocessing, via ``run_with_hydro``. The accompanying
-  ``store_monthly_hydro`` kwarg (and ``--store-monthly-hydro`` CLI flag,
-  default ``True``) additionally stores this hydrological output at monthly
-  resolution. The new ``ref_area_yr`` kwarg (and ``--ref-area-yr`` CLI flag)
-  lets users force the hydrological reference area to the glacier state of a
-  given simulation year, instead of the default largest area during the
-  simulation period (:pull:`1965`).
+  ``store_monthly_hydro`` kwarg (and ``--store-monthly-hydro`` CLI flag)
+  additionally stores this hydrological output at monthly resolution. It is
+  opt-in and defaults to ``False``, like in ``run_with_hydro``, since it
+  increases data usage quite a bit. The new ``ref_area_yr`` kwarg (and
+  ``--ref-area-yr`` CLI flag) lets users force the hydrological reference area
+  to the glacier state of a given simulation year, instead of the default
+  largest area during the simulation period (:pull:`1965`).
   By `Patrick Schmitt <https://github.com/pat-schmitt>`_
 
 Bug fixes
@@ -245,13 +246,24 @@ Bug fixes
   By `Fabien Maussion <https://github.com/fmaussion>`_
 - Multiple fixes to the test suite, missing assertions, test logic (:pull:`1960`).
   By `Nicolas Gampierakis <http://github.com/gampnico>`_.
-- OGGM arguments no longer silently accepts arbitrary strings and evaluates them
-  to True (:pull:`1986`).
+- ``--dynamic-spinup-periods-to-try`` now converts its values to integers.
+  They were passed on as strings, which made the flag unusable: any explicit
+  value crashed the dynamic spinup with a ``TypeError``. Non-numeric values
+  (other than the documented ``none``) now raise an ``InvalidParamsError``
+  (:pull:`1986`).
   By `Nicolas Gampierakis <https://github.com/gampnico>`_.
 
 Breaking changes
 ~~~~~~~~~~~~~~~~
 
+- The boolean flags of the ``oggm_prepro``, ``oggm_benchmark`` and
+  ``oggm_temp_bias`` commands (``--elev-bands``, ``--test``, ``--disable-mp``,
+  and all the others) no longer accept a value. They used to store whatever
+  string followed them, and since every non-empty string is truthy,
+  ``--elev-bands False`` turned elev-bands *on*. Passing a value is now an
+  error: use the bare flag to switch a behaviour on, and omit it to switch it
+  off (:pull:`1986`).
+  By `Nicolas Gampierakis <https://github.com/gampnico>`_.
 - The glacier intersects are no longer stored in
   ``cfg.PARAMS['intersects_gdf']``, but in ``cfg.INTERSECTS_GDF``. They are a
   (potentially large, region wide) dataframe and not a parameter, and having

@@ -1526,7 +1526,7 @@ class TestPreproCLI:
         assert kwargs['mb_calibration_strategy'] == 'informed_threestep'
         assert not kwargs['add_consensus_thickness']
         assert not kwargs['store_hydro_output']
-        assert kwargs['store_monthly_hydro']
+        assert not kwargs['store_monthly_hydro']
         assert kwargs['ref_area_yr'] is None
 
         kwargs = prepro_levels.parse_args(['--rgi-reg', '1',
@@ -1702,6 +1702,7 @@ class TestPreproCLI:
                                            'none',
                                            ])
         assert kwargs['dynamic_spinup_periods_to_try'] is None
+        assert kwargs['temp_bias_run'] is False
 
         with pytest.raises(InvalidParamsError):
             prepro_levels.parse_args(['--rgi-reg', '1',
@@ -1709,8 +1710,6 @@ class TestPreproCLI:
                                       '--dynamic-spinup-periods-to-try',
                                       '30', 'abc',
                                       ])
-
-        assert kwargs['temp_bias_run'] is False
 
         kwargs = prepro_levels.parse_args(['--rgi-reg', '1',
                                            '--map-border', '160',
@@ -1736,15 +1735,17 @@ class TestPreproCLI:
                                           flag, 'whatever',
                                           ])
 
-        # --store-monthly-hydro defaults to True, so really dirty fix here 
+        # Monthly hydro output is opt-in, like in flowline.run_with_hydro
         kwargs = prepro_levels.parse_args(['--rgi-reg', '1',
                                            '--map-border', '160',
-                                           '--no-store-monthly-hydro',
+                                           '--store-hydro-output',
                                            ])
+        assert kwargs['store_hydro_output'] is True
         assert kwargs['store_monthly_hydro'] is False
 
         kwargs = prepro_levels.parse_args(['--rgi-reg', '1',
                                            '--map-border', '160',
+                                           '--store-hydro-output',
                                            '--store-monthly-hydro',
                                            ])
         assert kwargs['store_monthly_hydro'] is True

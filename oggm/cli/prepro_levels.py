@@ -125,7 +125,7 @@ def run_prepro_levels(rgi_version=None, rgi_reg=None, border=None,
                       dynamic_spinup_start_year=1979,
                       dynamic_spinup_periods_to_try=None,
                       continue_on_error=True, store_fl_diagnostics=False,
-                      store_hydro_output=False, store_monthly_hydro=True,
+                      store_hydro_output=False, store_monthly_hydro=False,
                       ref_area_yr=None, temp_bias_run=False):
     """Generate the preprocessed OGGM glacier directories for this OGGM version
 
@@ -279,8 +279,9 @@ def run_prepro_levels(rgi_version=None, rgi_reg=None, border=None,
     store_hydro_output : bool
         if True, also store the hydrological model output.
     store_monthly_hydro : bool
-        if True and store_hydro_output is True the hydrological mode output will
-        also be stored in a monthly resolution (see flowline.run_with_hydro)
+        if True and store_hydro_output is True, the hydrological model output
+        is also stored at monthly resolution (see flowline.run_with_hydro).
+        This increases data usage quite a bit, hence the False default.
     ref_area_yr : int
         the hydrological output is computed over a reference area, which
         per default is the largest area covered by the glacier in the simulation
@@ -1328,11 +1329,10 @@ def parse_args(args):
                              "a bit.")
     parser.add_argument('--store-hydro-output', action='store_true',
                         help='Add optional hydrological model output')
-    parser.add_argument('--store-monthly-hydro', default=True,
-                        action=argparse.BooleanOptionalAction,
-                        help='If store-hydro-output is True, also store the '
-                             'hydrological model output in monthly resolution. '
-                             'Use --no-store-monthly-hydro to switch it off.')
+    parser.add_argument('--store-monthly-hydro', action='store_true',
+                        help='Requires --store-hydro-output. Also store the '
+                             'hydrological model output at monthly resolution. '
+                             'This increases data usage quite a bit.')
     parser.add_argument('--ref-area-yr', type=int, default=None,
                         help='Force the reference area used for the hydrological '
                              'output to the glacier state of the given simulation '
