@@ -570,15 +570,23 @@ class MonthlyTIModel(MassBalanceModel):
         if prcp_fac is None:
             prcp_fac = self.calib_params['prcp_fac']
 
+        # Global parameters
+        self.temp_all_solid = gdir.settings['temp_all_solid']
+        self.temp_all_liq = gdir.settings['temp_all_liq']
+        if temp_melt is None:
+            temp_melt = gdir.settings['temp_melt']
+        self.temp_melt = temp_melt
+        self.temp_default_gradient = gdir.settings['temp_default_gradient']
+
         # Check the climate related params to the GlacierDir to make sure
         if check_calib_params:
             mb_calib = self.calib_params['mb_global_params']
             for k, v in mb_calib.items():
-                if v != self.gdir.settings[k]:
+                if v != getattr(self, k):
                     msg = ('You seem to use different mass balance parameters '
                            'than used for the calibration: '
-                           f"you use gdir.settings['{k}']={gdir.settings[k]} while "
-                           f"it was calibrated with gdir.settings['{k}']={v}. "
+                           f'you use {k}={getattr(self, k)} while '
+                           f'it was calibrated with {k}={v}. '
                            'Set `check_calib_params=False` to ignore this '
                            'warning.')
                     raise InvalidWorkflowError(msg)
@@ -596,19 +604,9 @@ class MonthlyTIModel(MassBalanceModel):
         self.melt_f = melt_f
         self.bias = bias
 
-        # Global parameters
-        self.temp_all_solid = gdir.settings['temp_all_solid']
-        self.temp_all_liq = gdir.settings['temp_all_liq']
-        if temp_melt is None:
-            self.temp_melt = gdir.settings['temp_melt']
-        else:
-            gdir.settings['temp_melt'] = temp_melt
-            self.temp_melt = temp_melt
-
         # check if valid prcp_fac is used
         if prcp_fac <= 0:
             raise InvalidParamsError('prcp_fac has to be above zero!')
-        self.temp_default_gradient = gdir.settings['temp_default_gradient']
 
         # Public attrs
         self.hemisphere = gdir.hemisphere
@@ -4057,6 +4055,17 @@ def decide_winter_precip_factor(gdir):
                        gdir.settings['prcp_fac_max'])
 
 
+def _mb_global_params_from_model(mb_mod):
+    """Effective MB_GLOBAL_PARAMS of a (possibly wrapped) TI model.
+
+    These can differ from the gdir settings, e.g. DailyTIModel defaults
+    to temp_melt=0.0 regardless of settings['temp_melt'].
+    """
+    mod = getattr(mb_mod, "flowline_mb_models", [mb_mod])[0]
+    mod = getattr(mod, "mbmod", mod)  # e.g. SfcTypeTIModel
+    return {k: getattr(mod, k) for k in MB_GLOBAL_PARAMS}
+
+
 @entity_task(log, writes=['mb_calib'])
 def mb_calibration_from_wgms_mb(gdir, settings_filesuffix='',
                                 observations_filesuffix='',
@@ -4350,7 +4359,7 @@ def mb_calibration_to_rmsd(gdir, *,
 
     # Add the climate related params to the GlacierDir to make sure
     # other tools cannot fool around without re-calibration
-    df['mb_global_params'] = {k: gdir.settings[k] for k in MB_GLOBAL_PARAMS}
+    df['mb_global_params'] = _mb_global_params_from_model(mb_mod)
     df['baseline_climate_source'] = gdir.get_climate_info(
         filename=mb_mod.filename, input_filesuffix=mb_mod.input_filesuffix
     )['baseline_climate_source']
@@ -4379,7 +4388,6 @@ def mb_calibration_from_geodetic_mb(gdir, *,
                                     temp_bias_file_path=None,
                                     write_to_gdir=True,
                                     overwrite_gdir=False,
-                                    use_regional_avg=False,
                                     override_missing=None,
                                     use_2d_mb=False,
                                     informed_threestep=False,
@@ -4396,10 +4404,6 @@ def mb_calibration_from_geodetic_mb(gdir, *,
     values filtered. See this notebook* for more details.
 
     https://nbviewer.org/urls/cluster.klima.uni-bremen.de/~oggm/geodetic_ref_mb/convert_vold1.ipynb
-
-    This glacier-specific calibration can be replaced by a region-wide calibration
-    by using regional averages (same units: mm w.e.) instead of the glacier
-    specific averages.
 
     The problem of calibrating many unknown parameters on geodetic data is
     currently unsolved. This is OGGM's current take, based on trial and
@@ -4428,14 +4432,13 @@ def mb_calibration_from_geodetic_mb(gdir, *,
         the same format but can be any date.
     file_path : str, optional
         path or URL to a custom geodetic mass-balance file, passed to
-        utils.get_geodetic_mb_dataframe.
+        utils.get_geodetic_mb_dataframe. Per default, the file matching the
+        glacier's RGI version is used.
     temp_bias_file_path : str, optional
-        path or URL to a custom temperature-bias file, passed to
-        utils.get_temp_bias_dataframe. Only used with `informed_threestep`.
-        When set, it overrides the default w5e5/era5 file selection based on
-        the glacier's climate source, so it can be used together with an
-        arbitrary (custom) climate dataset. The file must follow the same
-        format as the default temp-bias files (check the format first!).
+        path or URL to the temperature-bias prior file, passed to
+        utils.get_temp_bias_dataframe. Required by `informed_threestep`
+        (and unused otherwise): there is no default, the file has to match
+        the setup it is used with (climate dataset, RGI version, ...).
     write_to_gdir : bool
         whether to write the results of the calibration to the glacier
         directory. If True (the default), this will be saved as `mb_calib.json`
@@ -4445,8 +4448,6 @@ def mb_calibration_from_geodetic_mb(gdir, *,
         if a `mb_calib.json` exists, this task won't overwrite it per default.
         Set this to True to enforce overwriting (i.e. with consequences for the
         future workflow).
-    use_regional_avg : bool
-        use the regional average instead of the glacier specific one.
     override_missing : scalar
         if the reference geodetic data is not available, use this value instead
         (mostly for testing with exotic datasets, but could be used to open
@@ -4492,27 +4493,18 @@ def mb_calibration_from_geodetic_mb(gdir, *,
 
         # Get the reference data
         ref_mb_err = np.nan
-        if use_regional_avg:
-            ref_mb_df_o = get_geodetic_mb_dataframe(file_path=file_path,
-                                                    regional=True)
-            ref_mb_df = ref_mb_df_o.loc[ref_mb_df_o.period == ref_mb_period].set_index('reg')
-            if len(ref_mb_df) == 0:
-                raise InvalidParamsError(f'Ref period {ref_mb_period} not found '
-                                         f'in file: {ref_mb_df_o.period.unique()}')
+        try:
+            ref_mb_df = get_geodetic_mb_dataframe(
+                file_path=file_path,
+                rgi_version=gdir.rgi_version).loc[gdir.rgi_id]
+            ref_mb_df = ref_mb_df.loc[ref_mb_df['period'] == ref_mb_period]
             # dmdtda: in meters water-equivalent per year -> we convert to kg m-2 yr-1
-            ref_mb = ref_mb_df.loc[int(gdir.rgi_region), 'dmdtda'] * 1000
-            ref_mb_err = ref_mb_df.loc[int(gdir.rgi_region), 'err_dmdtda'] * 1000
-        else:
-            try:
-                ref_mb_df = get_geodetic_mb_dataframe(file_path=file_path).loc[gdir.rgi_id]
-                ref_mb_df = ref_mb_df.loc[ref_mb_df['period'] == ref_mb_period]
-                # dmdtda: in meters water-equivalent per year -> we convert to kg m-2 yr-1
-                ref_mb = ref_mb_df['dmdtda'].iloc[0] * 1000
-                ref_mb_err = ref_mb_df['err_dmdtda'].iloc[0] * 1000
-            except KeyError:
-                if override_missing is None:
-                    raise
-                ref_mb = override_missing
+            ref_mb = ref_mb_df['dmdtda'].iloc[0] * 1000
+            ref_mb_err = ref_mb_df['err_dmdtda'].iloc[0] * 1000
+        except KeyError:
+            if override_missing is None:
+                raise
+            ref_mb = override_missing
 
         ref_mb_use = {
             'value': ref_mb,
@@ -4525,34 +4517,20 @@ def mb_calibration_from_geodetic_mb(gdir, *,
 
     temp_bias = 0
     if informed_threestep:
+        if temp_bias_file_path is None:
+            raise InvalidParamsError('`informed_threestep` needs a temperature '
+                                     'bias prior file: set `temp_bias_file_path` '
+                                     'to the file matching your setup (see '
+                                     'utils.get_temp_bias_dataframe).')
+        bias_df = get_temp_bias_dataframe(temp_bias_file_path)
         climinfo = gdir.get_climate_info()
-        climsource = climinfo['baseline_climate_source']
-        if temp_bias_file_path is not None:
-            bias_df = get_temp_bias_dataframe(file_path=temp_bias_file_path,
-                                              regional=use_regional_avg)
-        elif 'w5e5' in climsource.lower():
-            bias_df = get_temp_bias_dataframe('w5e5',
-                                              rgi_version=gdir.rgi_version,
-                                              regional=use_regional_avg)
-        elif 'era5' in climsource.lower():
-            bias_df = get_temp_bias_dataframe('era5',
-                                              rgi_version=gdir.rgi_version,
-                                              regional=use_regional_avg)
-        else:
-            raise InvalidWorkflowError('Dataset not suitable for '
-                                       f'informed 3-steps: {climsource}')
         ref_lon = climinfo['baseline_climate_ref_pix_lon']
         ref_lat = climinfo['baseline_climate_ref_pix_lat']
         # Take nearest
         dis = ((bias_df.lon_val - ref_lon)**2 + (bias_df.lat_val - ref_lat)**2)**0.5
         assert dis.min() < 1, 'Somethings wrong with lons'
         sel_df = bias_df.iloc[np.argmin(dis)]
-        # Which bias central value to use?
-        if use_regional_avg:
-            centralval = 'median_temp_bias_w_area_grouped'
-        else:
-            centralval = 'median_temp_bias_w_err_grouped'
-        temp_bias = sel_df[centralval]
+        temp_bias = sel_df['median_temp_bias_w_err_grouped']
         assert np.isfinite(temp_bias), 'Temp bias not finite?'
 
         if gdir.settings['prcp_fac'] is not None:
@@ -5131,7 +5109,7 @@ def mb_calibration_from_scalar_mb(gdir, *,
 
     # Add the climate related params to the GlacierDir to make sure
     # other tools cannot fool around without re-calibration
-    df['mb_global_params'] = {k: gdir.settings[k] for k in MB_GLOBAL_PARAMS}
+    df['mb_global_params'] = _mb_global_params_from_model(mb_mod)
     df['baseline_climate_source'] = gdir.get_climate_info(
         filename=mb_mod.filename, input_filesuffix=mb_mod.input_filesuffix
     )['baseline_climate_source']
