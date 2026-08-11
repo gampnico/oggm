@@ -245,6 +245,9 @@ Bug fixes
   By `Fabien Maussion <https://github.com/fmaussion>`_
 - Multiple fixes to the test suite, missing assertions, test logic (:pull:`1960`).
   By `Nicolas Gampierakis <http://github.com/gampnico>`_.
+- OGGM arguments no longer silently accepts arbitrary strings and evaluates them
+  to True (:pull:`1986`).
+  By `Nicolas Gampierakis <https://github.com/gampnico>`_.
 
 Breaking changes
 ~~~~~~~~~~~~~~~~
