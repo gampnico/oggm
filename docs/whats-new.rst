@@ -51,6 +51,14 @@ Enhancements
   arbitrary custom climate dataset instead of the hardcoded w5e5/era5 files
   (:pull:`1941`).
   By `Fabien Maussion <https://github.com/fmaussion>`_
+- `utils.get_geodetic_mb_dataframe` now selects the geodetic observations file
+  matching the RGI version (new `rgi_version` keyword, defaulting to
+  ``cfg.PARAMS['rgi_version']``): the observations are indexed by glacier id,
+  so RGI6 and RGI7G need different files. `mb_calibration_from_geodetic_mb`
+  passes the glacier's own RGI version, so RGI7G glacier directories now
+  calibrate on RGI7G observations out of the box. RGI7C is not available yet
+  (:pull:`1976`).
+  By `Fabien Maussion <https://github.com/fmaussion>`_
 - The temperature bias prior file used by the `informed_threestep` calibration
   can now be created from the command line, instead of with a notebook. The new
   ``oggm_temp_bias`` command (and the underlying
@@ -64,7 +72,16 @@ Enhancements
   writes nothing but the level 3 glacier statistics file, which is the input of
   ``oggm_temp_bias`` (it requires ``--mb-calibration-strategy temp_melt`` or
   ``temp_melt_regional`` to be set explicitly).
-  New utility function ``utils.weighted_quantile_1d``.
+  New utility function ``utils.weighted_quantile_1d`` (:pull:`1973`).
+  By `Fabien Maussion <https://github.com/fmaussion>`_
+- ``oggm_temp_bias`` now writes a ``<output file stem>_summary.txt`` diagnostic
+  file next to the csv (the same content also goes to the log). It reports the
+  provenance and parameters of the run, how many glaciers are missing from the
+  file and which tasks they failed on (globally and per RGI region), how many
+  glaciers have no bias for their own grid point because it had to be grouped,
+  which grid points are still below ``min_glaciers`` at the maximum search
+  radius (with the largest ones listed), and the mean, standard deviation and
+  percentiles of all the bias columns.
   By `Fabien Maussion <https://github.com/fmaussion>`_
 - Test durations are now visible in Actions logs (:pull:`1920`).
   By `Nicolas Gampierakis <https://github.com/gampnico>`_
@@ -199,6 +216,16 @@ Bug fixes
   dispatched to a worker process. They are now dropped before pickling and
   rebuilt from disk in the worker instead (:pull:`1967`).
   By `Patrick Schmitt <https://github.com/pat-schmitt>`_
+- Fixed a size regression in the glacier directories: each ``Flowline``
+  kept a reference to the model settings, and with it a shallow copy of
+  ``cfg.PARAMS``, which holds ``intersects_gdf`` - a region-wide table.
+  A flowline only ever needed two of those parameters, so ``Flowline`` now stores
+  ``min_ice_thick_for_length`` and ``glacier_length_method`` directly and no
+  longer has a ``settings`` attribute. They are read from the glacier settings
+  (or from ``cfg.PARAMS`` when the flowline is built without a glacier
+  directory) when the flowline is created, and can be overridden per flowline
+  by setting the attributes (:pull:`1979`).
+  By `Fabien Maussion <https://github.com/fmaussion>`_
 - Model constructors no longer silently persist a non-default ``temp_melt`` to
   the gdir settings file. ``check_calib_params`` now validates the effective
   model parameters instead of the settings file, and calibration tasks record
@@ -215,10 +242,31 @@ Bug fixes
   calling the tasks directly is unaffected. This has been applied to all
   "run_*" tasks to avoid memory issues (see "breaking changes") (:pull:`1977`).
   By `Fabien Maussion <https://github.com/fmaussion>`_
+- Multiple fixes to the test suite, missing assertions, test logic (:pull:`1960`).
+  By `Nicolas Gampierakis <http://github.com/gampnico>`_.
 
 Breaking changes
 ~~~~~~~~~~~~~~~~
 
+- The glacier intersects are no longer stored in
+  ``cfg.PARAMS['intersects_gdf']``, but in ``cfg.INTERSECTS_GDF``. They are a
+  (potentially large, region wide) dataframe and not a parameter, and having
+  them in ``cfg.PARAMS`` meant they were silently copied and pickled along
+  wherever the parameters are, which is not what a parameter dict is for. The
+  way to set them, ``cfg.set_intersects_db``, is unchanged, and so is
+  ``cfg.PARAMS['use_intersects']`` (:pull:`1980`).
+  By `Fabien Maussion <https://github.com/fmaussion>`_
+- The temperature-bias prior file of the `informed_threestep` calibration
+  now always has to given explicitly. There is no
+  default file anymore: `utils.get_temp_bias_dataframe` takes a single
+  `file_path` argument and `mb_calibration_from_geodetic_mb` raises an error
+  if `temp_bias_file_path` is not set.
+  The file has to match the setup it is used with, and it is created with a
+  `temp_bias_run` and the ``oggm_temp_bias`` command (:pull:`1976`).
+  By `Fabien Maussion <https://github.com/fmaussion>`_
+- The regional mass balance calibration introduced in 163 is removed again.
+  It was useful as RGI7 calibration data was missing (:pull:`1976`).
+  By `Fabien Maussion <https://github.com/fmaussion>`_
 - The default reference for RGI6 all initial glacier volumes is now
   IceBoost v2 - this replaces the previous consensus estimate (:pull:`1942`).
 - Renamed ``cfg.PARAMS['dynamic_spinup_min_ice_thick']`` to

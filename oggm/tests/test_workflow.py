@@ -22,7 +22,7 @@ import oggm
 import oggm.cfg as cfg
 from oggm import workflow
 from oggm.utils import get_demo_file, write_centerlines_to_shape, ModelSettings
-from oggm.tests import mpl_image_compare
+from oggm.tests import mpl_image_compare, TEMP_BIAS_FILE_W5E5_RGI6
 from oggm.tests.funcs import get_test_dir, use_multiprocessing, characs_apply_func
 from oggm.shop import cru
 from oggm.core import flowline, gis, inversion, centerlines, massbalance
@@ -33,7 +33,7 @@ from oggm.core.massbalance import (MonthlyTIModel, MultipleFlowlineMassBalance,
 from oggm.core.flowline import (run_from_climate_data, run_random_climate,
                                 init_present_time_glacier, run_constant_climate, MixedBedFlowline)
 from oggm.core.inversion import get_inversion_volume
-from oggm.exceptions import InvalidWorkflowError
+from oggm.exceptions import InvalidWorkflowError, InvalidParamsError
 
 # Globals
 pytestmark = pytest.mark.test_env("workflow")
@@ -342,9 +342,12 @@ class TestFullRun(unittest.TestCase):
                                    corner_cutting=3,
                                    simplify_line_after=0.05)
         shp_ext_smooth = salem.read_shapefile(fpath)
-        # This is a bit different of course
+        # This is a bit different of course, but should still be in the
+        # range of measured max rel diff ~0.17.
+        assert (shp_ext['LE_SEGMENT'] > 0).all()
+        assert (shp_ext_smooth['LE_SEGMENT'] > 0).all()
         assert_allclose(shp_ext['LE_SEGMENT'], shp_ext_smooth['LE_SEGMENT'],
-                        rtol=2)
+                        rtol=0.25)
 
         fpath = os.path.join(_TEST_DIR, 'flowlines.shp')
         write_centerlines_to_shape(gdirs, path=fpath, flowlines_output=True)
@@ -606,7 +609,6 @@ def test_rgi7_glacier_dirs():
     hef_rgi7_df = gpd.read_file(get_demo_file('rgi7g_hef.shp'))
     # create GDIR
     gdir = workflow.init_glacier_directories(hef_rgi7_df)[0]
-    assert gdir
     assert gdir.rgi_region == '11'
     assert gdir.rgi_area_km2 > 8
     assert gdir.name == 'Hintereisferner'
@@ -634,7 +636,6 @@ def test_rgi7_complex_glacier_dirs():
     hef_rgi7_df = gpd.read_file(get_demo_file('rgi7c_hef.shp'))
     # create GDIR
     gdir = workflow.init_glacier_directories(hef_rgi7_df)[0]
-    assert gdir
     assert gdir.rgi_region == '11'
     assert gdir.rgi_area_km2 > 20
     assert gdir.name == ''
@@ -706,6 +707,7 @@ class TestGdirSettings:
                                      gdirs,
                                      overwrite_gdir=True,
                                      informed_threestep=True,
+                                     temp_bias_file_path=TEMP_BIAS_FILE_W5E5_RGI6,
                                      settings_filesuffix='_informed_threestep',
                                      )
         mb_calib_threestep = gdirs[0].read_yml('settings',
@@ -720,6 +722,15 @@ class TestGdirSettings:
                         mb_calib_threestep['temp_bias'],
                         atol=6e-2)
 
+        # the temp bias prior file is not optional
+        with pytest.raises(InvalidParamsError):
+            tasks.mb_calibration_from_geodetic_mb(
+                gdir,
+                overwrite_gdir=True,
+                informed_threestep=True,
+                settings_filesuffix='_informed_threestep',
+            )
+
         # recalibration without overwrite_gdir should raise an error
         prcp_fac_original = settings_informed_threestep['prcp_fac']
         with pytest.raises(InvalidWorkflowError):
@@ -728,6 +739,7 @@ class TestGdirSettings:
                                          gdirs,
                                          overwrite_gdir=False,
                                          informed_threestep=True,
+                                         temp_bias_file_path=TEMP_BIAS_FILE_W5E5_RGI6,
                                          settings_filesuffix='_informed_threestep',
                                          )
 
@@ -1014,6 +1026,7 @@ class TestGdirObservations:
                                      gdirs,
                                      overwrite_gdir=True,
                                      informed_threestep=True,
+                                     temp_bias_file_path=TEMP_BIAS_FILE_W5E5_RGI6,
                                      settings_filesuffix='_informed_threestep',
                                      )
         # check that observation was added to the observation files and that the
@@ -1043,6 +1056,7 @@ class TestGdirObservations:
                                      gdirs,
                                      overwrite_gdir=True,
                                      informed_threestep=True,
+                                     temp_bias_file_path=TEMP_BIAS_FILE_W5E5_RGI6,
                                      settings_filesuffix='_informed_threestep',
                                      observations_filesuffix='_hugonnet_adapted',
                                      use_observations_file=True,

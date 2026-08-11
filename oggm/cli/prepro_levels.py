@@ -249,18 +249,18 @@ def run_prepro_levels(rgi_version=None, rgi_reg=None, border=None,
         - 'informed_threestep' (default)
         - 'melt_temp'
         - 'temp_melt'
-        Add the `_regional` suffix to use regional values instead,
-        for example `informed_threestep_regional`
     geodetic_mb_file_path : str
         optional path or URL to a custom geodetic MB file, passed to
         utils.get_geodetic_mb_dataframe and
         tasks.mb_calibration_from_geodetic_mb.
     temp_bias_file_path : str
-        optional path or URL to a custom temperature-bias file, passed to
-        tasks.mb_calibration_from_geodetic_mb (only used with the
-        'informed_threestep' calibration strategy). Use this together with a
-        `custom_climate_task` to calibrate on an arbitrary climate dataset.
-        The file must follow the same format as the default temp-bias files.
+        path or URL to the temperature-bias prior file, passed to
+        tasks.mb_calibration_from_geodetic_mb. Required by the
+        'informed_threestep' calibration strategy (and unused otherwise):
+        there is no default, the file has to match the setup it is used with
+        (climate dataset, RGI version, ...). It is created with a
+        `temp_bias_run` and the `oggm_temp_bias` command (see
+        utils.get_temp_bias_dataframe).
     select_source_from_dir : str
         if starting from a level 1 "ALL" or "STANDARD" DEM sources directory,
         select the chosen DEM source here. If you set it to "BY_RES" here,
@@ -367,7 +367,7 @@ def run_prepro_levels(rgi_version=None, rgi_reg=None, border=None,
         skips everything which is of no use for this purpose: the glacier
         directory tar files, the climate statistics and the fixed geometry
         mass balance. `mb_calibration_strategy` has to be set explicitly to
-        `temp_melt` (or `temp_melt_regional`), an error is raised otherwise.
+        `temp_melt`, an error is raised otherwise.
         The only output is the L3 `glacier_statistics` file, which is then
         turned into the temperature bias file with the `oggm_temp_bias`
         command (the grouping of climate grid points crosses RGI region
@@ -377,12 +377,11 @@ def run_prepro_levels(rgi_version=None, rgi_reg=None, border=None,
     # The temp bias preset overrides a couple of options. We log about it
     # further down, once cfg.initialize() has set the logging up.
     if temp_bias_run:
-        if not mb_calibration_strategy.startswith('temp_melt'):
+        if mb_calibration_strategy != 'temp_melt':
             raise InvalidParamsError(
                 'With `temp_bias_run`, the mass balance calibration strategy '
-                'has to be set explicitly to `temp_melt` (or to '
-                '`temp_melt_regional` for the regional flavor of the '
-                f'temperature bias file), not `{mb_calibration_strategy}`.')
+                'has to be set explicitly to `temp_melt`, not '
+                f'`{mb_calibration_strategy}`.')
         max_level = 3
         skip_inversion = True
 
@@ -390,14 +389,34 @@ def run_prepro_levels(rgi_version=None, rgi_reg=None, border=None,
     if max_level not in [1, 2, 3, 4, 5]:
         raise InvalidParamsError('max_level should be one of [1, 2, 3, 4, 5]')
 
+    if mb_calibration_strategy not in ['informed_threestep', 'melt_temp',
+                                       'temp_melt']:
+        raise InvalidParamsError('mb_calibration_strategy not understood: '
+                                 f'{mb_calibration_strategy}')
+
     if start_level is not None:
         if start_level not in [0, 1, 2, 3, 4]:
             raise InvalidParamsError('start_level should be one of [0, 1, 2, 3, 4]')
         if start_level > 0 and start_base_url is None:
             raise InvalidParamsError('With start_level, please also indicate '
                                      'start_base_url')
+        if start_level > 0 and intersects_file is not None:
+            log.workflow('`intersects_file` is ignored with start_level > 0: '
+                         'the intersects are written to the glacier '
+                         'directories at L0 and are already in the prepro '
+                         'files we start from.')
     else:
         start_level = 0
+
+    # The mass balance is calibrated in L3 only
+    if (start_level <= 2 and max_level >= 3 and
+            mb_calibration_strategy == 'informed_threestep' and
+            temp_bias_file_path is None):
+        raise InvalidParamsError(
+            'The `informed_threestep` calibration strategy needs a temperature '
+            'bias prior file: set `temp_bias_file_path` to the file matching '
+            'your setup. Such a file is created with a `temp_bias_run` and '
+            'the `oggm_temp_bias` command.')
 
     if dynamic_spinup:
         if dynamic_spinup not in ['area/dmdtda', 'volume/dmdtda']:
@@ -500,8 +519,10 @@ def run_prepro_levels(rgi_version=None, rgi_reg=None, border=None,
         # Get the RGI file
         rgidf = gpd.read_file(utils.get_rgi_region_file(rgi_reg,
                                                         version=rgi_version))
-        # We use intersects
-        if rgi_version != '70C':
+        # We use intersects. They are only needed to build the glacier
+        # directories from the RGI (L0): from L1 on, each directory has its
+        # own intersects.shp and the region wide file is never read again
+        if rgi_version != '70C' and start_level == 0:
             if intersects_file is None:
                 rgif = utils.get_rgi_intersects_region_file(rgi_reg,
                                                             version=rgi_version)
@@ -534,7 +555,8 @@ def run_prepro_levels(rgi_version=None, rgi_reg=None, border=None,
             rgidf = gpd.read_file(rgi_file)
         else:
             rgidf = rgi_file
-        cfg.set_intersects_db(intersects_file)
+        if start_level == 0:
+            cfg.set_intersects_db(intersects_file)
 
     if is_test:
         if test_ids is not None:
@@ -945,17 +967,11 @@ def run_prepro_levels(rgi_version=None, rgi_reg=None, border=None,
         else:
             workflow.execute_entity_task(tasks.process_climate_data, gdirs)
 
-        use_regional_avg = False
-        if '_regional' in mb_calibration_strategy:
-            use_regional_avg = True
-            mb_calibration_strategy = mb_calibration_strategy.replace('_regional', '')
-
         if mb_calibration_strategy == 'informed_threestep':
             workflow.execute_entity_task(tasks.mb_calibration_from_geodetic_mb,
                                          gdirs,
                                          informed_threestep=True,
                                          mb_model_class=mb_model_class,
-                                         use_regional_avg=use_regional_avg,
                                          file_path=geodetic_mb_file_path,
                                          temp_bias_file_path=temp_bias_file_path)
         elif mb_calibration_strategy == 'melt_temp':
@@ -964,7 +980,6 @@ def run_prepro_levels(rgi_version=None, rgi_reg=None, border=None,
                                          calibrate_param1='melt_f',
                                          calibrate_param2='temp_bias',
                                          mb_model_class=mb_model_class,
-                                         use_regional_avg=use_regional_avg,
                                          file_path=geodetic_mb_file_path)
         elif mb_calibration_strategy == 'temp_melt':
             workflow.execute_entity_task(tasks.mb_calibration_from_geodetic_mb,
@@ -972,7 +987,6 @@ def run_prepro_levels(rgi_version=None, rgi_reg=None, border=None,
                                          calibrate_param1='temp_bias',
                                          calibrate_param2='melt_f',
                                          mb_model_class=mb_model_class,
-                                         use_regional_avg=use_regional_avg,
                                          file_path=geodetic_mb_file_path)
         else:
             raise InvalidParamsError('mb_calibration_strategy not understood: '
@@ -1341,11 +1355,11 @@ def parse_args(args):
                              "(Farinotti et al. 2019, RGI62 only).")
     parser.add_argument('--mb-calibration-strategy', type=str,
                         default='informed_threestep',
-                        help='how to calibrate the massbalance. Currently one of '
-                             'informed_threestep (default) , melt_temp '
-                             'or temp_melt. Add the _regional suffix to '
-                             'use regional values instead, for example '
-                             'informed_threestep_regional')
+                        choices=['informed_threestep', 'melt_temp',
+                                 'temp_melt'],
+                        help='how to calibrate the massbalance. Currently one '
+                             'of informed_threestep (default), melt_temp '
+                             'or temp_melt.')
     parser.add_argument('--dem-source', type=str, default='',
                         help='which DEM source to use. Possible options are '
                              'the name of a specific DEM (e.g. RAMP, SRTM...) '
@@ -1456,18 +1470,22 @@ def parse_args(args):
                         help='optional path or URL to a custom geodetic MB '
                              'file passed to MB calibration.')
     parser.add_argument('--temp-bias-file-path', type=str, default=None,
-                        help='optional path or URL to a custom temperature-bias '
-                             'file passed to MB calibration (informed_threestep '
-                             'only). Use together with --custom-climate-task.')
+                        help='path or URL to the temperature-bias prior file '
+                             'passed to MB calibration. Required by the '
+                             'informed_threestep strategy (and unused '
+                             'otherwise): there is no default, the file has to '
+                             'match the setup it is used with. It is created '
+                             'with --temp-bias-run and the `oggm_temp_bias` '
+                             'command.')
     parser.add_argument('--temp-bias-run', nargs='?', const=True, default=False,
                         help='run the preprocessing needed to create the '
                              'temperature bias prior file. This forces '
                              '--max-level 3 and --skip-inversion, and writes '
                              'nothing but the L3 glacier statistics file. '
-                             'Requires --mb-calibration-strategy temp_melt '
-                             '(or temp_melt_regional). Feed the result to the '
-                             '`oggm_temp_bias` command (together with the '
-                             'other regions) to create the file.')
+                             'Requires --mb-calibration-strategy temp_melt. '
+                             'Feed the result to the `oggm_temp_bias` command '
+                             '(together with the other regions) to create the '
+                             'file.')
     parser.add_argument('--store-fl-diagnostics', nargs='?', const=True, default=False,
                         help="Also compute and store flowline diagnostics during "
                              "preprocessing. This can increase data usage quite "

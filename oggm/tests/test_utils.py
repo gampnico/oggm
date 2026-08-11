@@ -26,6 +26,7 @@ from oggm.utils import _downloads
 from oggm import cfg
 from oggm.cfg import SEC_IN_YEAR
 from oggm.utils._workflow import compile_to_netcdf
+from oggm.tests import TEMP_BIAS_FILE_W5E5_RGI6, GEODETIC_MB_REGIONAL_AVG
 from oggm.tests.funcs import (get_test_dir, init_hef, TempEnvironmentVariable,
                               characs_apply_func)
 from oggm.utils import shape_factor_adhikari
@@ -867,6 +868,46 @@ class TestInitialize(unittest.TestCase):
         from oggm import DEFAULT_BASE_URL
         assert '2025.6' in DEFAULT_BASE_URL
 
+    def test_intersects_db(self):
+        # the intersects are a (potentially large, region wide) dataframe and
+        # not a parameter: they must stay out of cfg.PARAMS, which is copied
+        # and pickled all over the place as if it held scalars only
+        import pickle
+        import geopandas as gpd
+        import shapely.geometry as shpg
+
+        assert 'intersects_gdf' not in cfg.PARAMS
+        assert len(cfg.INTERSECTS_GDF) == 0
+
+        n = 500
+        line = shpg.LineString([(0, 0), (1, 1)])
+        gdf = gpd.GeoDataFrame({'RGIId_1': ['x'] * n, 'RGIId_2': ['y'] * n},
+                               geometry=[line] * n)
+
+        cfg.CONFIG_MODIFIED = False
+        cfg.set_intersects_db(gdf)
+        assert len(cfg.INTERSECTS_GDF) == n
+        assert 'intersects_gdf' not in cfg.PARAMS
+        # the workers must be told about the new database
+        assert cfg.CONFIG_MODIFIED
+
+        # cfg.PARAMS is what gets shipped to the workers and stored in the
+        # settings defaults: it should stay small
+        assert len(pickle.dumps(dict(cfg.PARAMS))) < 50_000
+
+        # ... but the intersects still travel to the workers
+        packed = cfg.pack_config()
+        cfg.INTERSECTS_GDF = pd.DataFrame()
+        cfg.unpack_config(packed)
+        assert len(cfg.INTERSECTS_GDF) == n
+
+        # both ways of asking for no intersects at all
+        cfg.set_intersects_db()
+        assert len(cfg.INTERSECTS_GDF) == 0
+        cfg.PARAMS['use_intersects'] = False
+        cfg.set_intersects_db(gdf)
+        assert len(cfg.INTERSECTS_GDF) == 0
+
 
 class TestWorkflowTools(unittest.TestCase):
 
@@ -1689,6 +1730,7 @@ class TestPreproCLI:
                           elev_bands=True,
                           mb_model_class=mb_model_class,
                           inversion_volume_dataset='consensus',
+                          temp_bias_file_path=TEMP_BIAS_FILE_W5E5_RGI6,
                           continue_on_error=False,
                           override_params={}
                           )
@@ -1724,7 +1766,7 @@ class TestPreproCLI:
         odf['AREA'] = df.rgi_area_km2
         smb_oggm = np.average(odf['SMB'], weights=odf['AREA'])
 
-        dfh = utils.get_geodetic_mb_dataframe(regional=True)
+        dfh = pd.read_csv(utils.file_downloader(GEODETIC_MB_REGIONAL_AVG))
         dfh = dfh.loc[dfh.period == '2000-01-01_2020-01-01'].set_index('reg')
         smb_ref = dfh.loc[11, 'dmdtda'] * 1000
         np.testing.assert_allclose(smb_oggm, smb_ref, atol=200)  # Whole Alps
@@ -1871,6 +1913,7 @@ class TestPreproCLI:
                           elev_bands=True,
                           max_level=3,
                           inversion_volume_dataset='consensus',
+                          temp_bias_file_path=TEMP_BIAS_FILE_W5E5_RGI6,
                           add_distributed_thickness=True,
                           add_export_thickness_geotiff=True,
                           continue_on_error=False,
@@ -1934,6 +1977,7 @@ class TestPreproCLI:
                           elev_bands=True,
                           max_level=4,
                           inversion_volume_dataset='consensus',
+                          temp_bias_file_path=TEMP_BIAS_FILE_W5E5_RGI6,
                           store_hydro_output=True,
                           store_monthly_hydro=True,
                           ref_area_yr=2000,
@@ -2017,7 +2061,7 @@ class TestPreproCLI:
         odf['AREA'] = df.rgi_area_km2
         smb_oggm = np.average(odf['SMB'], weights=odf['AREA'])
 
-        dfh = utils.get_geodetic_mb_dataframe(regional=True)
+        dfh = pd.read_csv(utils.file_downloader(GEODETIC_MB_REGIONAL_AVG))
         dfh = dfh.loc[dfh.period == '2000-01-01_2020-01-01'].set_index('reg')
         smb_ref = dfh.loc[11, 'dmdtda'] * 1000
         np.testing.assert_allclose(smb_oggm, smb_ref, atol=150)  # Whole Alps
@@ -2477,6 +2521,7 @@ class TestPreproCLI:
                           rgi_file=rgidf, intersects_file=inter,
                           logging_level='INFO',
                           inversion_volume_dataset='consensus',
+                          temp_bias_file_path=TEMP_BIAS_FILE_W5E5_RGI6,
                           test_topofile=topof, dem_source='ALL')
 
         rid = rgidf.iloc[0].RGIId
@@ -2717,6 +2762,21 @@ class TestTempBiasCLI:
         assert os.path.isfile(os.path.join(self.testdir, 'out',
                                            'temp_bias_v42_hist.png'))
 
+        # The summary is written next to the file - it is what is left after
+        # the run, especially when there is no job log to go back to
+        with open(os.path.join(self.testdir, 'out',
+                               'temp_bias_v42_summary.txt')) as f:
+            summary = f.read()
+        for expected in ['Input glaciers', 'MISSING from this file',
+                         'Per RGI region', 'Climate grid', 'Grouping of the',
+                         'Final bias values', 'median_temp_bias_w_err_grouped',
+                         'min_glaciers      : 12',
+                         'glacier_statistics_11.csv']:
+            assert expected in summary, expected
+        # the headline numbers are the real ones
+        assert '{}'.format(int(out.n_glaciers.sum())) in summary
+        assert '{}'.format(len(out)) in summary
+
         # This is what OGGM does with the file: it must be readable and the
         # nearest grid point lookup must work (see mb_calibration_from_
         # geodetic_mb)
@@ -2770,6 +2830,12 @@ class TestTempBiasCLI:
             run_prepro_levels(rgi_version='61', rgi_reg='11', border=20,
                               output_folder=odir, working_dir=wdir,
                               temp_bias_run=True,
+                              mb_calibration_strategy='informed_threestep')
+
+        # And informed_threestep needs the file we are about to create
+        with pytest.raises(InvalidParamsError):
+            run_prepro_levels(rgi_version='61', rgi_reg='11', border=20,
+                              output_folder=odir, working_dir=wdir,
                               mb_calibration_strategy='informed_threestep')
 
         # The statistics file is the only thing this run is good for
@@ -3551,6 +3617,21 @@ class TestDataFiles(unittest.TestCase):
         with pytest.warns(DeprecationWarning, match="hdf"):
             df = _downloads.get_dataframe_from_file(hdf_path)
         pd.testing.assert_frame_equal(df, df_orig)
+
+    @pytest.mark.slow
+    def test_get_geodetic_mb_dataframe(self):
+
+        df = utils.get_geodetic_mb_dataframe(rgi_version='62')
+        assert df.index[0].startswith('RGI60-')
+        # RGI6 is the default
+        assert cfg.PARAMS['rgi_version'] == '62'
+        assert utils.get_geodetic_mb_dataframe().index[0].startswith('RGI60-')
+
+        df = utils.get_geodetic_mb_dataframe(rgi_version='70G')
+        assert df.index[0].startswith('RGI2000-v7.0-G-')
+
+        with pytest.raises(NotImplementedError):
+            utils.get_geodetic_mb_dataframe(rgi_version='70C')
 
     def test_srtmzone(self):
 

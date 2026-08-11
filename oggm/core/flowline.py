@@ -106,10 +106,22 @@ class Flowline(Centerline):
         self.map_trafo = None
         if grid is not None:
             gdir.settings_filesuffix = settings_filesuffix
-            self.settings = gdir.settings
+            settings = gdir.settings
             self.map_trafo = partial(grid.ij_to_crs, crs=salem.wgs84)
         else:
-            self.settings = cfg.PARAMS.copy()
+            settings = cfg.PARAMS
+        # a flowline only needs these two parameters (for its length), so we
+        # store them instead of a reference to the settings: the latter would
+        # be pickled with every flowline, together with everything it points
+        # to (the gdir, and a copy of cfg.PARAMS with its intersects_gdf)
+        try:
+            self.min_ice_thick_for_length = settings['min_ice_thick_for_length']
+        except KeyError:
+            self.min_ice_thick_for_length = 0
+        try:
+            self.glacier_length_method = settings['glacier_length_method']
+        except KeyError:
+            self.glacier_length_method = None
         # volume not yet removed from the flowline
         self.calving_bucket_m3 = 0
 
@@ -156,16 +168,14 @@ class Flowline(Centerline):
     def length_m(self):
         # TODO: take calving bucket into account for fine tuned length?
         try:
-            lt = self.settings['min_ice_thick_for_length']
-        except KeyError:
-            lt = 0
+            lt = self.min_ice_thick_for_length
         except AttributeError:
             # this is for backwards-compatibility with old gdirs
             lt = cfg.PARAMS.get('min_ice_thick_for_length', 0)
 
         # this is for backwards-compatibility with old gdirs
         try:
-            glacier_length_method = self.settings['glacier_length_method']
+            glacier_length_method = self.glacier_length_method
         except AttributeError:
             glacier_length_method = cfg.PARAMS.get('glacier_length_method')
 
@@ -183,16 +193,14 @@ class Flowline(Centerline):
         # the index of the last point with ice thickness above
         # min_ice_thick_for_length and consistent with length
         try:
-            lt = self.settings['min_ice_thick_for_length']
-        except KeyError:
-            lt = 0
+            lt = self.min_ice_thick_for_length
         except AttributeError:
             # this is for backwards-compatibility with old gdirs
             lt = cfg.PARAMS.get('min_ice_thick_for_length', 0)
 
         # this is for backwards-compatibility with old gdirs
         try:
-            glacier_length_method = self.settings['glacier_length_method']
+            glacier_length_method = self.glacier_length_method
         except AttributeError:
             glacier_length_method = cfg.PARAMS.get('glacier_length_method')
         if glacier_length_method == 'consecutive':
@@ -4006,7 +4014,8 @@ def flowline_model_run(gdir, settings_filesuffix='',
 
     # ensure the flowlines are using the right settings
     for fl in fls:
-        fl.settings = gdir.settings
+        fl.min_ice_thick_for_length = gdir.settings['min_ice_thick_for_length']
+        fl.glacier_length_method = gdir.settings['glacier_length_method']
 
     if (gdir.settings['use_kcalving_for_run'] and gdir.is_tidewater and
             water_level is None):
