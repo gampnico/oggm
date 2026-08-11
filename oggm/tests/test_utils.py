@@ -1678,31 +1678,72 @@ class TestPreproCLI:
 
         assert kwargs['dynamic_spinup'] == 'area/dmdtda'
         assert kwargs['ref_mb_err_scaling_factor'] == 0.5
+        assert kwargs['dynamic_spinup_periods_to_try'] == [30, 40, 50, 60, 70,
+                                                           80, 90, 100]
 
-        assert kwargs["temp_bias_run"] is False
+        # The spinup periods are years, and 'none' is the documented way to
+        # ask for no additional period at all
+        kwargs = prepro_levels.parse_args(['--rgi-reg', '1',
+                                           '--map-border', '160',
+                                           '--dynamic-spinup-periods-to-try',
+                                           '30', '40',
+                                           ])
+        assert kwargs['dynamic_spinup_periods_to_try'] == [30, 40]
 
-        kwargs = prepro_levels.parse_args(
-            [
-                "--rgi-reg",
-                "1",
-                "--map-border",
-                "160",
-                "--temp-bias-run",
-            ]
-        )
-        assert kwargs["temp_bias_run"] is True
+        kwargs = prepro_levels.parse_args(['--rgi-reg', '1',
+                                           '--map-border', '160',
+                                           '--dynamic-spinup-periods-to-try',
+                                           'none',
+                                           ])
+        assert kwargs['dynamic_spinup_periods_to_try'] is None
 
-        with pytest.raises(SystemExit):
-            prepro_levels.parse_args(
-                [
-                    "--rgi-reg",
-                    "1",
-                    "--map-border",
-                    "160",
-                    "--temp-bias-run",
-                    "whatever",
-                ]
-            )
+        with pytest.raises(InvalidParamsError):
+            prepro_levels.parse_args(['--rgi-reg', '1',
+                                      '--map-border', '160',
+                                      '--dynamic-spinup-periods-to-try',
+                                      '30', 'abc',
+                                      ])
+
+        assert kwargs['temp_bias_run'] is False
+
+        kwargs = prepro_levels.parse_args(['--rgi-reg', '1',
+                                           '--map-border', '160',
+                                           '--temp-bias-run',
+                                           ])
+        assert kwargs['temp_bias_run'] is True
+
+        # The boolean flags are on/off switches: a value is an error, not a
+        # truthy string silently switching them on
+        for flag in ['--elev-bands', '--centerlines', '--skip-inversion',
+                     '--keep-dem-folders', '--add-consensus-thickness',
+                     '--add-itslive-velocity', '--add-millan-thickness',
+                     '--add-millan-velocity', '--add-hugonnet-dhdt',
+                     '--add-bedmachine', '--add-glathida',
+                     '--add-distributed-thickness',
+                     '--add-export-thickness-geotiff', '--compute-hypsometry',
+                     '--test', '--disable-mp', '--store-fl-diagnostics',
+                     '--store-hydro-output', '--store-monthly-hydro',
+                     '--temp-bias-run',
+                     ]:
+            with pytest.raises(SystemExit):
+                prepro_levels.parse_args(['--rgi-reg', '1',
+                                          '--map-border', '160',
+                                          flag, 'whatever',
+                                          ])
+
+        # --store-monthly-hydro defaults to True, so it needs its negated
+        # counterpart to be switchable at all
+        kwargs = prepro_levels.parse_args(['--rgi-reg', '1',
+                                           '--map-border', '160',
+                                           '--no-store-monthly-hydro',
+                                           ])
+        assert kwargs['store_monthly_hydro'] is False
+
+        kwargs = prepro_levels.parse_args(['--rgi-reg', '1',
+                                           '--map-border', '160',
+                                           '--store-monthly-hydro',
+                                           ])
+        assert kwargs['store_monthly_hydro'] is True
 
         with TempEnvironmentVariable(OGGM_RGI_REG='12',
                                      OGGM_MAP_BORDER='120',
@@ -2575,6 +2616,9 @@ class TestTempBiasCLI:
         assert kwargs['err_fill_quantile'] == 0.5
         assert kwargs['rgi_subregion'] == ['11-01']
 
+        with pytest.raises(SystemExit):
+            temp_bias.parse_args(['--input', 'in_dir', '--no-plots', 'whatever'])
+
         with pytest.raises(InvalidParamsError):
             temp_bias.parse_args([])
 
@@ -2940,6 +2984,12 @@ class TestBenchmarkCLI(unittest.TestCase):
         assert kwargs['rgi_reg'] == '01'
         assert kwargs['border'] == 160
         assert kwargs['is_test']
+
+        with pytest.raises(SystemExit):
+            benchmark.parse_args(['--rgi-reg', '1',
+                                  '--map-border', '160',
+                                  '--test', 'whatever',
+                                  ])
 
         kwargs = benchmark.parse_args(['--rgi-reg', '1',
                                        '--map-border', '160',

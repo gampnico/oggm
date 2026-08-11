@@ -1169,13 +1169,13 @@ def parse_args(args):
     parser.add_argument('--logging-level', type=str, default='WORKFLOW',
                         help='the logging level to use (DEBUG, INFO, WARNING, '
                              'WORKFLOW).')
-    parser.add_argument('--elev-bands', nargs='?', const=True, default=False,
+    parser.add_argument('--elev-bands', action='store_true',
                         help='compute the flowlines based on the Huss & Farinotti '
                              '2012 method.')
-    parser.add_argument('--centerlines', nargs='?', const=True, default=False,
+    parser.add_argument('--centerlines', action='store_true',
                         help='compute the flowlines based on the OGGM '
                              'centerline(s) method.')
-    parser.add_argument('--skip-inversion', nargs='?', const=True, default=False,
+    parser.add_argument('--skip-inversion', action='store_true',
                         help='do not run the inversion (level 3 files). '
                              'this is a temporary workaround for workflows '
                              'that wont run that far into level 3.')
@@ -1212,40 +1212,40 @@ def parse_args(args):
                         'If you set it to "BY_RES" here, COPDEM will be used and '
                         'its resolution chosen based on the gdirs map resolution '
                         '(COPDEM30 for dx < 60 m, COPDEM90 elsewhere).')
-    parser.add_argument('--keep-dem-folders', nargs='?', const=True, default=False,
+    parser.add_argument('--keep-dem-folders', action='store_true',
                         help='if `select_source_from_dir` is used, wether to keep '
                         'the original DEM folders in or not.')
-    parser.add_argument('--add-consensus-thickness', nargs='?', const=True, default=False,
+    parser.add_argument('--add-consensus-thickness', action='store_true',
                         help='adds (reprojects) the consensus thickness '
                              'estimates to the glacier directories. '
                              'With --elev-bands, the data will also be '
                              'binned.')
-    parser.add_argument('--add-itslive-velocity', nargs='?', const=True, default=False,
+    parser.add_argument('--add-itslive-velocity', action='store_true',
                         help='adds (reprojects) the ITS_LIVE velocity '
                              'estimates to the glacier directories. '
                              'With --elev-bands, the data will also be '
                              'binned.')
-    parser.add_argument('--add-millan-thickness', nargs='?', const=True, default=False,
+    parser.add_argument('--add-millan-thickness', action='store_true',
                         help='adds (reprojects) the millan thickness '
                              'estimates to the glacier directories. '
                              'With --elev-bands, the data will also be '
                              'binned.')
-    parser.add_argument('--add-millan-velocity', nargs='?', const=True, default=False,
+    parser.add_argument('--add-millan-velocity', action='store_true',
                         help='adds (reprojects) the millan velocity '
                              'estimates to the glacier directories. '
                              'With --elev-bands, the data will also be '
                              'binned.')
-    parser.add_argument('--add-hugonnet-dhdt', nargs='?', const=True, default=False,
+    parser.add_argument('--add-hugonnet-dhdt', action='store_true',
                         help='adds (reprojects) the hugonnet dhdt '
                              'maps to the glacier directories. '
                              'With --elev-bands, the data will also be '
                              'binned.')
-    parser.add_argument('--add-bedmachine', nargs='?', const=True, default=False,
+    parser.add_argument('--add-bedmachine', action='store_true',
                         help='adds (reprojects) the Bedmachine ice thickness '
                              'maps to the glacier directories. '
                              'With --elev-bands, the data will also be '
                              'binned.')
-    parser.add_argument('--add-glathida', nargs='?', const=True, default=False,
+    parser.add_argument('--add-glathida', action='store_true',
                         help='adds (reprojects) the glathida point thickness '
                              'observations to the glacier directories. '
                              'The data points are stored as csv.')
@@ -1254,18 +1254,18 @@ def parse_args(args):
                             'If provided, it replaces the default process_climate_data.')
     parser.add_argument('--custom-climate-task-kwargs', type=json.loads, default=None,
                         help='JSON dict of kwargs passed to the custom climate task.')
-    parser.add_argument('--add-distributed-thickness', nargs='?', const=True, default=False,
+    parser.add_argument('--add-distributed-thickness', action='store_true',
                         help='adds a thickness field to gridded_data using '
                              'distribute_thickness_per_altitude.')
-    parser.add_argument('--add-export-thickness-geotiff', nargs='?', const=True, default=False,
+    parser.add_argument('--add-export-thickness-geotiff', action='store_true',
                         help='exports the distributed thickness field to '
                              'GeoTIFF files in a subfolder of the L3 summary '
                              'directory. Requires --add-distributed-thickness.')
-    parser.add_argument('--compute-hypsometry', nargs='?', const=True, default=False,
+    parser.add_argument('--compute-hypsometry', action='store_true',
                         help='Compute the hypsometry tables for all glaciers, '
                              'added to the glacier directory and compiled in '
                              'the summary folder')
-    parser.add_argument('--test', nargs='?', const=True, default=False,
+    parser.add_argument('--test', action='store_true',
                         help='if you want to do a test on a couple of '
                              'glaciers first.')
     parser.add_argument('--test-ids', nargs='+',
@@ -1277,7 +1277,7 @@ def parse_args(args):
     parser.add_argument('--intersects-file', type=str, default=None,
                         help='path to an intersects shapefile to use instead '
                              'of the default RGI intersects file.')
-    parser.add_argument('--disable-mp', nargs='?', const=True, default=False,
+    parser.add_argument('--disable-mp', action='store_true',
                         help='if you want to disable multiprocessing.')
     parser.add_argument('--dynamic-spinup', type=str, default='',
                         help="include a dynamic spinup for matching glacier area "
@@ -1322,15 +1322,17 @@ def parse_args(args):
                              'Feed the result to the `oggm_temp_bias` command '
                              '(together with the other regions) to create the '
                              'file.')
-    parser.add_argument('--store-fl-diagnostics', nargs='?', const=True, default=False,
+    parser.add_argument('--store-fl-diagnostics', action='store_true',
                         help="Also compute and store flowline diagnostics during "
                              "preprocessing. This can increase data usage quite "
                              "a bit.")
-    parser.add_argument('--store-hydro-output', nargs='?', const=True, default=False,
+    parser.add_argument('--store-hydro-output', action='store_true',
                         help='Add optional hydrological model output')
-    parser.add_argument('--store-monthly-hydro', nargs='?', const=True, default=True,
+    parser.add_argument('--store-monthly-hydro', default=True,
+                        action=argparse.BooleanOptionalAction,
                         help='If store-hydro-output is True, also store the '
-                             'hydrological model output in monthly resolution.')
+                             'hydrological model output in monthly resolution. '
+                             'Use --no-store-monthly-hydro to switch it off.')
     parser.add_argument('--ref-area-yr', type=int, default=None,
                         help='Force the reference area used for the hydrological '
                              'output to the glacier state of the given simulation '
@@ -1373,8 +1375,18 @@ def parse_args(args):
 
     dynamic_spinup = False if args.dynamic_spinup == '' else args.dynamic_spinup
 
-    if args.dynamic_spinup_periods_to_try == ['none']:
-        args.dynamic_spinup_periods_to_try = None
+    periods_to_try = args.dynamic_spinup_periods_to_try
+    if periods_to_try == ['none']:
+        periods_to_try = None
+    elif periods_to_try is not None:
+        try:
+            periods_to_try = [int(p) for p in periods_to_try]
+        except (TypeError, ValueError):
+            raise InvalidParamsError(
+                '--dynamic-spinup-periods-to-try takes spinup periods in '
+                "years, or the single value 'none', but got "
+                f'{periods_to_try}!'
+            )
 
     # All good
     return dict(rgi_version=rgi_version, rgi_reg=rgi_reg,
