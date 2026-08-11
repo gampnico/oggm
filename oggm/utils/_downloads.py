@@ -25,6 +25,8 @@ import ftplib
 import ssl
 import tarfile
 import json
+import warnings
+from pathlib import Path
 
 # External libs
 import pandas as pd
@@ -68,7 +70,7 @@ logger = logging.getLogger('.'.join(__name__.split('.')[:-1]))
 # The given commit will be downloaded from github and used as source for
 # all sample data
 SAMPLE_DATA_GH_REPO = 'OGGM/oggm-sample-data'
-SAMPLE_DATA_COMMIT = '8af40f89620c6bd72f3485a777a018dcacb99d94'
+SAMPLE_DATA_COMMIT = 'ae1dfa73a34bd31ba977945056d5ad34b58060ef'
 
 # Recommended url for runs
 DEFAULT_BASE_URL = ('https://cluster.klima.uni-bremen.de/~oggm/gdirs/oggm_v1.6/'
@@ -1211,7 +1213,54 @@ def _get_prepro_gdir_unlocked(
     return tar_base
 
 
-def get_geodetic_mb_dataframe(file_path=None, regional=False):
+def get_dataframe_from_file(file_path: Path | str, **kwargs) -> pd.DataFrame:
+    """Fetches a dataframe from a file.
+
+    Parameters
+    ----------
+    file_path : str or Path
+        Path to the file to read. Supports csv and parquet files, with
+        deprecation warning for hdf files.
+    **kwargs
+        Additional keyword arguments to pass to the pandas read function.
+
+    Returns
+    -------
+    pd.DataFrame
+        The dataframe read from the file.
+
+    Raises
+    ------
+    NotImplementedError
+        If the file extension is not supported.
+
+    Warns
+    -----
+    DeprecationWarning
+        If reading from hdf files, a warning is raised that support will
+        be removed in a future release.
+    """
+    extension = Path(file_path).suffix.lower()
+
+    if extension == ".csv":
+        df = pd.read_csv(file_path, **kwargs)
+    elif extension in [".hdf", ".h5"]:
+        warnings.warn(
+            "Reading directly from hdf files will be removed in a future "
+            "release and replaced with geoparquet.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        df = pd.read_hdf(file_path, **kwargs)
+    elif extension == ".parquet":
+        df = pd.read_parquet(file_path, engine="pyarrow", **kwargs)
+    else:
+        raise NotImplementedError(f"File type not supported: {extension}")
+
+    return df
+
+
+def get_geodetic_mb_dataframe(file_path=None, rgi_version=None):
     """Fetches the reference geodetic dataframe for calibration.
 
     Currently that's the data from Hughonnet et al 2021, corrected for
@@ -1219,13 +1268,17 @@ def get_geodetic_mb_dataframe(file_path=None, regional=False):
     available at
     https://nbviewer.jupyter.org/urls/cluster.klima.uni-bremen.de/~oggm/geodetic_ref_mb/convert.ipynb
 
+    The data is indexed by glacier id, i.e. there is one file per RGI version.
+
     Parameters
     ----------
     file_path : str
         in case you have your own file to parse (check the format first!).
-        Can be a url as well
-    regional : bool
-        to fetch the regional file instead - this is a different format!
+        Can be a url as well. If provided, `rgi_version` is ignored.
+    rgi_version : str
+        the RGI version to fetch the file for: '62' (or the equivalent '60',
+        '61') or '70G'. RGI70C is not available yet. Defaults to the one
+        specified in cfg.PARAMS.
 
     Returns
     -------
@@ -1234,13 +1287,21 @@ def get_geodetic_mb_dataframe(file_path=None, regional=False):
 
     # fetch the file online or read custom file
     if file_path is None:
-        base_url = 'https://cluster.klima.uni-bremen.de/~oggm/geodetic_ref_mb/'
-        if regional:
-            file_name = 'hugonnet_2021_regional_avg.csv'
-            file_path = file_downloader(base_url + file_name)
+        if rgi_version is None:
+            rgi_version = cfg.PARAMS['rgi_version']
+
+        if rgi_version in ['60', '61', '62']:
+            rgi_str = 'rgi60'
+        elif rgi_version == '70G':
+            rgi_str = 'rgi70G'
         else:
-            file_name = 'hugonnet_2021_ds_rgi60_pergla_rates_10_20_worldwide_filled.hdf'
-            file_path = file_downloader(base_url + file_name)
+            raise NotImplementedError('No geodetic mass balance data available '
+                                      f'for RGI version: {rgi_version}')
+
+        base_url = 'https://cluster.klima.uni-bremen.de/~oggm/geodetic_ref_mb/'
+        file_name = (f'hugonnet_2021_ds_{rgi_str}_pergla_rates_10_20_'
+                     'worldwide_filled.parquet')
+        file_path = file_downloader(base_url + file_name)
 
     if file_path.startswith('http'):
         file_path = file_downloader(file_path)
@@ -1250,12 +1311,7 @@ def get_geodetic_mb_dataframe(file_path=None, regional=False):
         return cfg.DATA[file_path]
 
     # If not let's go
-    extension = os.path.splitext(file_path)[1]
-    if extension == '.csv':
-        df = pd.read_csv(file_path)
-    elif extension == '.hdf':
-        df = pd.read_hdf(file_path)
-
+    df = get_dataframe_from_file(file_path)
     # Check for missing data (old files)
     if len(df.loc[df['dmdtda'].isnull()]) > 0:
         raise InvalidParamsError('The reference file you are using has missing '
@@ -1266,61 +1322,41 @@ def get_geodetic_mb_dataframe(file_path=None, regional=False):
     return df
 
 
-def get_temp_bias_dataframe(dataset, regional=False, rgi_version='62'):
-    """Fetches the temperature bias dataframe.
+def get_temp_bias_dataframe(file_path):
+    """Reads the temperature bias dataframe used by `informed_threestep`.
 
-    The dataframe was created by the OGGM>=v16 pre-calibration
-    (further explained in the `OGGM mass balance tutorial <https://tutorials.oggm.org/stable/notebooks/tutorials/massbalance_calibration.html>`_
+    There is no default file: it has to be created for the exact setup it is
+    used with (climate dataset, RGI version, OGGM version...), and its path
+    given explicitly. To create such a file, run the preprocessing with the
+    `temp_melt` calibration strategy (``oggm_prepro --temp-bias-run``) and
+    summarize its glacier statistics with the ``oggm_temp_bias`` command (see
+    :py:func:`utils.compute_temp_bias_dataframe`). The method is further
+    explained in the `OGGM mass balance tutorial <https://tutorials.oggm.org/stable/notebooks/tutorials/massbalance_calibration.html>`_.
 
-    The data preparation script is available at
-    https://nbviewer.jupyter.org/urls/cluster.klima.uni-bremen.de/~oggm/gdirs/oggm_v1.6/calibration/1.6.1/prepare_bias_map.ipynb
-
-    The file differs between climate datasets and OGGM versions. For W5E5 and OGGM v162, it is e.g.
-    https://cluster.klima.uni-bremen.de/~oggm/ref_mb_params/oggm_v1.6/w5e5_temp_bias_v2023.4.csv
+    The files used by the OGGM preprocessed directories are available on the
+    cluster, e.g. for W5E5 and RGI6:
+    https://cluster.klima.uni-bremen.de/~oggm/ref_mb_params/oggm_v1.6/w5e5_rgi6_perglacier_temp_bias_v2025.6.2.csv
 
     Parameters
     ----------
-    dataset : str
-        climate dataset used to choose temperature bias dataframe
-        (currently only w5e5 and era5 are available)
+    file_path : str
+        path to the temperature bias file (check the format first!).
+        Can be a url as well.
 
     Returns
     -------
     a DataFrame with the data.
     """
 
-    if dataset not in ['w5e5', 'era5']:
-        raise NotImplementedError(f'No such dataset available yet: {dataset}')
-    if rgi_version == '60':
-        rgi_version = '62'
-    if rgi_version not in ['62', '70G', '70C']:
-        raise NotImplementedError(f'RGI version not available yet: {rgi_version}')
-
-    # fetch the file online
-    base_url = 'https://cluster.klima.uni-bremen.de/~oggm/ref_mb_params/oggm_v1.6/'
-    calibtype = 'regional' if regional else 'perglacier'
-    if rgi_version in ['70G', '70C']:
-        file_version = '1'
-    if rgi_version == '62':
-        file_version = '3' if regional else '2'
-        rgi_version = '6'
-    if dataset == 'w5e5':
-        base_url += f'w5e5_rgi{rgi_version}_{calibtype}_temp_bias_v2025.6.{file_version}.csv'
-    if dataset == 'era5':
-        base_url += f'era5_rgi{rgi_version}_{calibtype}_temp_bias_v2025.6.{file_version}.csv'
-
-    file_path = file_downloader(base_url)
+    if file_path.startswith('http'):
+        file_path = file_downloader(file_path)
 
     # Did we open it yet?
     if file_path in cfg.DATA:
         return cfg.DATA[file_path]
 
     # If not let's go
-    extension = os.path.splitext(file_path)[1]
-    if extension == '.csv':
-        df = pd.read_csv(file_path, index_col=0)
-    elif extension == '.hdf':
-        df = pd.read_hdf(file_path)
+    df = get_dataframe_from_file(file_path, index_col=0)
 
     cfg.DATA[file_path] = df
     return df

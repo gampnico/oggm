@@ -158,6 +158,10 @@ PARAMS = ParamsLoggingDict()
 PATHS = PathOrderedDict()
 BASENAMES = DocumentedDict()
 LRUHANDLERS = ResettingOrderedDict()
+# The glacier intersects, set with set_intersects_db. This is a dataframe and
+# not a parameter, so it is kept out of PARAMS: it can be a large, region wide
+# table, and PARAMS is copied around and pickled as if it held scalars only
+INTERSECTS_GDF = pd.DataFrame()
 
 # Constants
 SEC_IN_YEAR = 365*24*3600
@@ -254,15 +258,14 @@ BASENAMES['inversion_flowlines'] = ('inversion_flowlines.pkl', _doc)
 _doc = 'The historical monthly climate timeseries stored in a netCDF file.'
 BASENAMES['climate_historical'] = ('climate_historical.nc', _doc)
 
-# so far, this is only ERA5 or E5E5 daily and does not work with the default
-# OGGM mass balance module, only with sandbox
-_doc = ('The historical daily climate timeseries stored in a netCDF file.'
-        '(only temperature is really changing on daily basis,'
-        'precipitation is just assumed constant for every day')
-BASENAMES['climate_historical_daily'] = ('climate_historical_daily.nc', _doc)
-
 _doc = "A dict containing the glacier's mass balance calibration parameters."
 BASENAMES['mb_calib'] = ('mb_calib.json', _doc)
+
+_doc = ('A group netcdf file containing the complete state of a SfcTypeTIModel '
+        'instance. This is useful for projeciton runs to start from historical '
+        'snow bucket state. Netcdf groups = fl_{i}, with i between 0 and '
+        'n_flowlines - 1')
+BASENAMES['mb_diagnostics'] = ('mb_diagnostics.nc', _doc)
 
 _doc = 'The monthly GCM climate timeseries stored in a netCDF file.'
 BASENAMES['gcm_data'] = ('gcm_data.nc', _doc)
@@ -299,6 +302,12 @@ BASENAMES['elevation_band_flowline'] = ('elevation_band_flowline.csv', _doc)
 
 _doc = "The outlines of this glacier complex sub-entities (for RGI7C only!)."
 BASENAMES['complex_sub_entities'] = ('complex_sub_entities.shp', _doc)
+
+_doc = "A dict containing all settings used during the OGGM workflow."
+BASENAMES['settings'] = ('settings.yml', _doc)
+
+_doc = "A dict containing all observations used during the OGGM workflow."
+BASENAMES['observations'] = ('observations.yml', _doc)
 
 
 def set_logging_config(logging_level='INFO'):
@@ -522,6 +531,7 @@ def initialize_minimal(file=None, logging_level='INFO', params=None):
     k = 'error_when_glacier_reaches_boundaries'
     PARAMS[k] = cp.as_bool(k)
     PARAMS['store_model_geometry'] = cp.as_bool('store_model_geometry')
+    PARAMS['store_output_on_error'] = cp.as_bool('store_output_on_error')
     PARAMS['store_fl_diagnostics'] = cp.as_bool('store_fl_diagnostics')
 
     # Climate
@@ -580,7 +590,7 @@ def initialize_minimal(file=None, logging_level='INFO', params=None):
            'free_board_marine_terminating', 'use_kcalving_for_inversion',
            'error_when_glacier_reaches_boundaries', 'glacier_length_method',
            'use_inversion_params_for_run',
-           'tidewater_type', 'store_model_geometry',
+           'tidewater_type', 'store_model_geometry', 'store_output_on_error',
            'store_diagnostic_variables', 'store_fl_diagnostic_variables',
            'geodetic_mb_period', 'store_fl_diagnostics',
            'prcp_fac', 'downstream_line_shape', 'keep_multipolygon_outlines']
@@ -769,17 +779,19 @@ def set_intersects_db(path_or_gdf=None):
         the intersects file to use
     """
 
-    global PARAMS
-    PARAMS.do_log = False
+    global INTERSECTS_GDF, CONFIG_MODIFIED
 
     if PARAMS['use_intersects'] and path_or_gdf is not None:
         if isinstance(path_or_gdf, str):
-            PARAMS['intersects_gdf'] = gpd.read_file(path_or_gdf)
+            INTERSECTS_GDF = gpd.read_file(path_or_gdf)
         else:
-            PARAMS['intersects_gdf'] = path_or_gdf
+            INTERSECTS_GDF = path_or_gdf
     else:
-        PARAMS['intersects_gdf'] = pd.DataFrame()
-    PARAMS.do_log = True
+        INTERSECTS_GDF = pd.DataFrame()
+
+    # the workers need to be given the new database: this used to happen for
+    # free when the intersects were stored in PARAMS
+    CONFIG_MODIFIED = True
 
 
 def reset_working_dir():
@@ -802,7 +814,8 @@ def pack_config():
         'DATA': dict(DATA),
         'BASENAMES': dict(BASENAMES),
         'DL_VERIFIED': dict(DL_VERIFIED),
-        'DEM_SOURCE_TABLE': dict(DEM_SOURCE_TABLE)
+        'DEM_SOURCE_TABLE': dict(DEM_SOURCE_TABLE),
+        'INTERSECTS_GDF': INTERSECTS_GDF,
     }
 
 
@@ -810,9 +823,10 @@ def unpack_config(cfg_dict):
     """Unpack and apply the config packed via pack_config."""
 
     global IS_INITIALIZED, PARAMS, PATHS, BASENAMES, LRUHANDLERS, DATA
-    global DL_VERIFIED, DEM_SOURCE_TABLE
+    global DL_VERIFIED, DEM_SOURCE_TABLE, INTERSECTS_GDF
 
     IS_INITIALIZED = cfg_dict['IS_INITIALIZED']
+    INTERSECTS_GDF = cfg_dict['INTERSECTS_GDF']
 
     prev_log = PARAMS.do_log
     PARAMS.do_log = False
