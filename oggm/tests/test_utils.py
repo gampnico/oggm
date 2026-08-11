@@ -1679,6 +1679,31 @@ class TestPreproCLI:
         assert kwargs['dynamic_spinup'] == 'area/dmdtda'
         assert kwargs['ref_mb_err_scaling_factor'] == 0.5
 
+        assert kwargs["temp_bias_run"] is False
+
+        kwargs = prepro_levels.parse_args(
+            [
+                "--rgi-reg",
+                "1",
+                "--map-border",
+                "160",
+                "--temp-bias-run",
+            ]
+        )
+        assert kwargs["temp_bias_run"] is True
+
+        with pytest.raises(SystemExit):
+            prepro_levels.parse_args(
+                [
+                    "--rgi-reg",
+                    "1",
+                    "--map-border",
+                    "160",
+                    "--temp-bias-run",
+                    "whatever",
+                ]
+            )
+
         with TempEnvironmentVariable(OGGM_RGI_REG='12',
                                      OGGM_MAP_BORDER='120',
                                      OGGM_OUTDIR='local/out',

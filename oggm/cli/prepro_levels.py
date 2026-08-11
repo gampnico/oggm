@@ -1313,7 +1313,7 @@ def parse_args(args):
                              'match the setup it is used with. It is created '
                              'with --temp-bias-run and the `oggm_temp_bias` '
                              'command.')
-    parser.add_argument('--temp-bias-run', nargs='?', const=True, default=False,
+    parser.add_argument('--temp-bias-run', action='store_true',
                         help='run the preprocessing needed to create the '
                              'temperature bias prior file. This forces '
                              '--max-level 3 and --skip-inversion, and writes '
