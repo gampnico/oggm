@@ -381,7 +381,7 @@ class TestFullRun(unittest.TestCase):
         gdirs = workflow.execute_entity_task(utils.copy_to_basedir, gdirs,
                                              base_dir=base_dir, setup='all')
         path_centerline = gdirs[0].get_filepath('centerlines')
-        for path in [path_centerline,path_centerline.replace(".pkl", ".zarr")]:
+        for path in [path_centerline, path_centerline.replace('.npz', '.pkl')]:
             if os.path.exists(path):
                 os.remove(path)
         cfg.PARAMS['continue_on_error'] = True
@@ -412,7 +412,7 @@ class TestFullRun(unittest.TestCase):
             from oggm.core.massbalance import LinearMassBalance
             from oggm.core.flowline import FluxBasedModel
             mb_mod = LinearMassBalance(ela_h=2500)
-            fls = gd.read_store('model_flowlines')
+            fls = gd.read_npz('model_flowlines')
             model = FluxBasedModel(fls, mb_model=mb_mod)
             df.loc[gd.rgi_id, 'start_area_km2'] = model.area_km2
             df.loc[gd.rgi_id, 'start_volume_km3'] = model.volume_km3
@@ -911,8 +911,8 @@ class TestGdirSettings:
         custom_settings['trapezoid_lambdas'] = gdir.settings['trapezoid_lambdas'] * 1.5
         workflow.inversion_tasks(gdir, settings_filesuffix='_large_lambda',
                                  input_filesuffix='')
-        inv_out_default = gdir.read_store('inversion_output')
-        inv_out_lambda = gdir.read_store('inversion_output',
+        inv_out_default = gdir.read_npz('inversion_output')
+        inv_out_lambda = gdir.read_npz('inversion_output',
                                           filesuffix='_large_lambda')
         # do not look at last 5 grid points because of filter_inversion_output
         assert np.all(inv_out_default[0]['thick'][:-5] <
@@ -943,7 +943,7 @@ class TestGdirSettings:
             gdirs, settings_filesuffix='_large_melt_f', ref_table=ref_table,
             input_filesuffix='_large_melt_f', apply_fs_on_mismatch=True)
         glen_a_after = custom_settings['inversion_glen_a']
-        inv_out_melt_f = gdir.read_store('inversion_output',
+        inv_out_melt_f = gdir.read_npz('inversion_output',
                                           filesuffix='_large_melt_f')
         # with larger melt_f the residual of the apparent mass balance must be
         # larger, to compensate for the more negative mb
@@ -977,7 +977,7 @@ class TestGdirSettings:
 
         inversion.prepare_for_inversion(gdir)
         inversion.mass_conservation_inversion(gdir)
-        cls1 = gdir.read_store('inversion_output')
+        cls1 = gdir.read_npz('inversion_output')
         # Increase calving for this one using settings
         custom_settings = ModelSettings(gdir,
                                         filesuffix='_large_k',
@@ -989,7 +989,7 @@ class TestGdirSettings:
         out = inversion.find_inversion_calving_from_any_mb(
             gdir, settings_filesuffix='_large_k', output_filesuffix='_large_k',
         )
-        cls2 = gdir.read_store('inversion_output', filesuffix='_large_k')
+        cls2 = gdir.read_npz('inversion_output', filesuffix='_large_k')
 
         # Calving increases the volume and adds a residual
         v_ref = np.sum([np.sum(fl['volume']) for fl in cls1])
@@ -1120,166 +1120,188 @@ class TestGdirObservations:
         assert 'You have not provided an reference' in str(exc_info.value)
 
 
-class TestZarrWorkflow:
-    """Tests for any Zarr operations called via workflow or _workflow."""
+class TestNpzStore:
+    """gdir.read_npz / write_npz and the serialize codecs behind them."""
 
-    @pytest.mark.skip(reason="warning disabled for performance")
-    def test_pickle_warnings(self, hef_gdir):
-        """Test that write_pickle raises a warning if used."""
+    def test_roundtrip_dict(self, hef_gdir):
+        """A plain dict of arrays and scalars survives unchanged."""
         gdir = hef_gdir
+        var = {'flux': np.array([1.0, 2.0, 3.0]),
+               'dx': 100.0,
+               'is_last': False,
+               'name': 'a_string',
+               'nothing': None}
+        gdir.write_npz(var, 'inversion_input', filesuffix='_npztest')
+        out = gdir.read_npz('inversion_input', filesuffix='_npztest')
 
-        with pytest.warns(
-            PendingDeprecationWarning,
-            match="gdir.write_pickle is deprecated and will be replaced by gdir.write_store in a future OGGM release.",
-        ):
-            gdir.write_pickle(
-                var={"array": [1, 2]},
-                filename="inversion_input",
-                filesuffix="test_pickle",
-            )
+        np.testing.assert_array_equal(out['flux'], [1.0, 2.0, 3.0])
+        assert out['dx'] == 100.0
+        assert out['is_last'] is False
+        assert out['name'] == 'a_string'
+        assert out['nothing'] is None
 
-    @pytest.mark.skip
-    @pytest.mark.parametrize("arg_filesuffix", ["", "_exp01"])
-    def test_write_zarr(tmp_path, hef_gdir, arg_filesuffix):
-        """Create a zarr store at the expected path."""
-        cfg.initialize()
-        cfg.PATHS["working_dir"] = str(tmp_path)
+    def test_scalar_types_are_preserved(self, hef_gdir):
+        """Scalars must come back as Python scalars, not 0-d numpy arrays.
+
+        Regression test: reading them as 0-d arrays made `fl.rgi_id` fail
+        `.startswith()` and made `'11.008' in fl.rgi_id` silently False.
+        """
         gdir = hef_gdir
+        fls = gdir.read_npz('model_flowlines')
+        gdir.write_npz(fls, 'model_flowlines', filesuffix='_npztest')
+        out = gdir.read_npz('model_flowlines', filesuffix='_npztest')
 
-        ds = xr.Dataset(
-            {
-                "temperature": xr.DataArray(
-                    np.array([1.0, 2.0, 3.0]), dims=["time"]
-                )
-            }
-        )
-        data_tree = xr.DataTree(dataset=ds)
+        fl = out[-1]
+        assert isinstance(fl.rgi_id, str)
+        assert fl.rgi_id.startswith('RGI')
+        assert gdir.rgi_id in fl.rgi_id
+        assert isinstance(fl.dx, float)
+        assert isinstance(fl.map_dx, float)
+        assert not isinstance(fl.order, np.ndarray)
 
-        gdir.write_zarr(
-            data_tree=data_tree,
-            filename="data_store",
-            filesuffix=arg_filesuffix,
-        )
+        inv = gdir.read_npz('inversion_output')
+        assert inv[-1]['is_last'] is True
+        assert isinstance(inv[-1]['dx'], float)
 
-        fp = gdir.get_filepath(filename="data_store", filesuffix=arg_filesuffix)
-        assert os.path.exists(fp)
+    def test_flowlines_use_gdir_settings(self, hef_gdir):
+        """Flowlines must pick up per-gdir settings, not cfg.PARAMS.
 
-        with xr.open_zarr(fp, consolidated=True) as ds_read:
-            np.testing.assert_array_equal(
-                ds_read["temperature"].values, [1.0, 2.0, 3.0]
-            )
-
-        # Test that overwrite=True replaces existing zarr content
-
-        ds_new = xr.Dataset(
-            {"val": xr.DataArray(np.array([9.0, 8.0]), dims=["n"])}
-        )
-        gdir.write_zarr(
-            xr.DataTree(dataset=ds_new), "data_store", overwrite=True
-        )
-
-        fp = gdir.get_filepath("data_store")
-        with xr.open_zarr(fp, consolidated=True) as ds_read:
-            np.testing.assert_array_equal(ds_read["val"].values, [9.0, 8.0])
-
-    # @pytest.mark.xfail(reason="zarr is not yet in oggm-sample-data")
-    def test_read_store(self, tmp_path, hef_gdir):
-        """Test that read_store returns xr.DataTree when zarr store exists."""
-        cfg.initialize()
-        cfg.PATHS["working_dir"] = str(tmp_path)
+        Regression test: rebuilding them without the gdir silently replaced
+        min_ice_thick_for_length and glacier_length_method with the globals,
+        which changes the reported glacier length.
+        """
         gdir = hef_gdir
+        old_thick = gdir.settings['min_ice_thick_for_length']
+        old_method = gdir.settings['glacier_length_method']
+        try:
+            gdir.settings.set('min_ice_thick_for_length', 42.0)
+            gdir.settings.set('glacier_length_method', 'consecutive')
+            fls = gdir.read_npz('model_flowlines')
+            assert fls[-1].min_ice_thick_for_length == 42.0
+            assert fls[-1].glacier_length_method == 'consecutive'
+            assert cfg.PARAMS['min_ice_thick_for_length'] != 42.0
+        finally:
+            gdir.settings.set('min_ice_thick_for_length', old_thick)
+            gdir.settings.set('glacier_length_method', old_method)
 
-        ds = xr.Dataset(
-            {"flux": xr.DataArray(np.array([1.0, 2.0, 3.0]), dims=["time"])}
-        )
-        data_tree = xr.DataTree()
-        data_tree["inversion_input_test"] = xr.DataTree.from_dict(
-            name="inversion_input_test", data=ds
-        )
-        # until this is included via oggm-sample-data
-        gdir.write_zarr(data_tree=data_tree, filename="data_store", overwrite=False)
-        result = gdir.read_store(filename="inversion_input", filesuffix="_test")
-
-        assert isinstance(result, list)
-        assert isinstance(result[0], dict)
-
-        # This will fail if it reads the pickle instead of the zarr
-        np.testing.assert_array_equal(result[0]["flux"], [1.0, 2.0, 3.0])
-
-    def test_read_store_fallback(self, hef_gdir):
-        """Test read_store falls back to read_pickle if zarr is not found."""
-        from oggm.utils import _workflow
-
+    def test_flowline_roundtrip(self, hef_gdir):
+        """Values, classes and topology survive a full round trip."""
         gdir = hef_gdir
-        # Force use of pickle or this test will never pass once switched to zarr
-        gdir.write_pickle(
-            var=[1, 2, 3],
-            filename="inversion_flowlines",
-            filesuffix="test_pickle",
-        )
-        # reset so test observes the first warning
-        _workflow._warn_zarr_fallback.cache_clear()
-        with pytest.warns(
-            Warning,
-            match="Zarr data not found, attempting to read pickle file instead.",
-        ):
-            ds_read = gdir.read_store(
-                filename="inversion_flowlines", filesuffix="test_pickle"
-            )
-        assert not isinstance(ds_read, xr.DataTree)
-        assert isinstance(ds_read, list)
+        for name in ['inversion_flowlines', 'model_flowlines']:
+            orig = gdir.read_npz(name)
+            gdir.write_npz(orig, name, filesuffix='_npztest')
+            back = gdir.read_npz(name, filesuffix='_npztest')
 
-        # warn-once behaviour
-        with warnings.catch_warnings(record=True) as records:
-            warnings.simplefilter("always")
-            ds_read = gdir.read_store(
-                filename="inversion_flowlines", filesuffix="test_pickle"
-            )
-        assert not any(
-            "Zarr data not found" in str(r.message) for r in records
-        )
-        assert isinstance(ds_read, list)
+            assert len(back) == len(orig)
+            for a, b in zip(orig, back):
+                assert type(a) is type(b)
+                np.testing.assert_allclose(a.surface_h, b.surface_h)
+                np.testing.assert_allclose(a.widths, b.widths)
+                assert a.line.equals_exact(b.line, 1e-9)
+            # topology, including the junction points
+            assert ([orig.index(f.flows_to) if f.flows_to is not None else -1
+                     for f in orig] ==
+                    [back.index(f.flows_to) if f.flows_to is not None else -1
+                     for f in back])
+            for a, b in zip(orig, back):
+                if a.flows_to_point is None:
+                    assert b.flows_to_point is None
+                else:
+                    assert a.flows_to_point.equals_exact(b.flows_to_point, 1e-9)
 
-    def test_validate_store(self, hef_gdir):
+    def test_geometries_roundtrip(self, hef_gdir):
+        """Polygons keep their interiors, and catchment indices their shape."""
         gdir = hef_gdir
+        orig = gdir.read_npz('geometries')
+        gdir.write_npz(orig, 'geometries', filesuffix='_npztest')
+        back = gdir.read_npz('geometries', filesuffix='_npztest')
 
-        ds = xr.Dataset(
-            {"flux": xr.DataArray(np.array([100.0, 200.0, 300.0]), dims=["x"])}
-        )
-        data_tree = xr.DataTree(dataset=ds, name="inversion_input")
+        assert set(orig) == set(back)
+        for key in ['polygon_hr', 'polygon_pix']:
+            assert back[key].equals_exact(orig[key], 1e-9)
+            assert len(back[key].interiors) == len(orig[key].interiors)
+        assert isinstance(orig['polygon_area'], float)
+        assert back['polygon_area'] == orig['polygon_area']
+        if orig.get('catchment_indices') is not None:
+            assert len(back['catchment_indices']) == \
+                   len(orig['catchment_indices'])
+            for a, b in zip(orig['catchment_indices'],
+                            back['catchment_indices']):
+                np.testing.assert_array_equal(a, b)
 
-        result = gdir._validate_store(data_tree=data_tree)
-
-        assert isinstance(result, list)
-        assert isinstance(result[0], dict)
-        np.testing.assert_array_equal(result[0]["flux"], [100.0, 200.0, 300.0])
-
-    def test_validate_store_logic(self, hef_gdir):
-        """Test that _validate_store modifies the data_tree as expected."""
+    def test_downstream_line_roundtrip(self, hef_gdir):
         gdir = hef_gdir
-        downstream_line = gdir.read_store("downstream_line")["downstream_line"]
-        assert isinstance(downstream_line, shapely.LineString)
+        orig = gdir.read_npz('downstream_line')
+        gdir.write_npz(orig, 'downstream_line', filesuffix='_npztest')
+        back = gdir.read_npz('downstream_line', filesuffix='_npztest')
 
-        # Create a DataTree with a downstream_line variable
-        data_tree = xr.DataTree()
-        ds = xr.Dataset(
-            {
-                "downstream_line": xr.DataArray(
-                    np.array(
-                        shapely.geometry.mapping(downstream_line)["coordinates"]
-                    ),
-                    dims=["x", "y"],
-                )
-            }
-        )
-        data_tree = xr.DataTree(dataset=ds, name="downstream_line")
-        assert data_tree.name == "downstream_line"
+        assert isinstance(back['downstream_line'], shapely.LineString)
+        assert back['downstream_line'].equals_exact(orig['downstream_line'],
+                                                    1e-9)
+        assert 'full_line' in back
 
-        result = gdir._validate_store(data_tree=data_tree)
+    def test_no_oggm_or_shapely_names_on_disk(self, hef_gdir):
+        """The point of the format: nothing in the file names a class.
 
-        assert isinstance(result, dict)
-        assert "downstream_line" in result.keys()
-        assert isinstance(result["downstream_line"], shapely.LineString)
-        assert shapely.LineString(result["downstream_line"]).equals(
-            downstream_line
-        )
+        This is what #1524 is about - a pickle of Centerline objects embeds
+        `oggm.Centerline` and `shapely.from_wkb` and stops being readable
+        when either library changes.
+        """
+        gdir = hef_gdir
+        fls = gdir.read_npz('inversion_flowlines')
+        gdir.write_npz(fls, 'inversion_flowlines', filesuffix='_npztest')
+        fp = gdir.get_filepath('inversion_flowlines', filesuffix='_npztest')
+
+        import zipfile
+        with zipfile.ZipFile(fp) as zf:
+            raw = b''.join(zf.read(n) for n in zf.namelist())
+        for name in [b'oggm', b'shapely', b'Centerline']:
+            assert name not in raw
+
+        # and it must load with pickles refused outright
+        with np.load(fp, allow_pickle=False) as data:
+            assert len(data.files) > 1
+
+    def test_legacy_pickle_is_read(self, hef_gdir):
+        """Directories written before the npz switch still work."""
+        gdir = hef_gdir
+        fp = gdir.get_filepath('inversion_input', filesuffix='_legacy')
+        assert fp.endswith('.npz')
+
+        gdir.write_pickle([{'flux': np.array([1.0, 2.0])}],
+                          'inversion_input', filesuffix='_legacy')
+        assert os.path.exists(fp.replace('.npz', '.pkl'))
+        assert not os.path.exists(fp)
+        assert gdir.has_file('inversion_input', filesuffix='_legacy')
+
+        out = gdir.read_npz('inversion_input', filesuffix='_legacy')
+        np.testing.assert_array_equal(out[0]['flux'], [1.0, 2.0])
+
+    def test_write_npz_removes_stale_pickle(self, hef_gdir):
+        """A legacy pickle must not survive to shadow what we just wrote.
+
+        Regression test: read_pickle is still public API, and would happily
+        serve pre-update data after a task had rewritten the store.
+        """
+        gdir = hef_gdir
+        gdir.write_pickle([{'flux': np.array([1.0])}],
+                          'inversion_input', filesuffix='_stale')
+        legacy = gdir.get_filepath('inversion_input',
+                                   filesuffix='_stale').replace('.npz', '.pkl')
+        assert os.path.exists(legacy)
+
+        gdir.write_npz([{'flux': np.array([2.0])}],
+                       'inversion_input', filesuffix='_stale')
+        assert not os.path.exists(legacy)
+        out = gdir.read_npz('inversion_input', filesuffix='_stale')
+        np.testing.assert_array_equal(out[0]['flux'], [2.0])
+
+    def test_missing_file_raises(self, hef_gdir):
+        with pytest.raises(FileNotFoundError):
+            hef_gdir.read_npz('inversion_input', filesuffix='_does_not_exist')
+
+    def test_unsupported_type_raises(self, hef_gdir):
+        """Encode failures must be loud, not a silent fallback to pickle."""
+        with pytest.raises(TypeError):
+            hef_gdir.write_npz(object(), 'inversion_input',
+                               filesuffix='_bad')

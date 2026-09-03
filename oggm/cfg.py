@@ -233,11 +233,11 @@ _doc = ('A dictionary containing the shapely.Polygons of a glacier. The '
         'contains a list of len `n_centerlines`, each element containing '
         'a numpy array of the indices in the glacier grid which represent '
         'the centerlines catchment area.')
-BASENAMES['geometries'] = ('geometries.pkl', _doc)
+BASENAMES['geometries'] = ('geometries.npz', _doc)
 
 _doc = ('A dictionary containing the downstream line geometry as well as the '
         'bed shape computed from a parabolic fit.')
-BASENAMES['downstream_line'] = ('downstream_line.pkl', _doc)
+BASENAMES['downstream_line'] = ('downstream_line.npz', _doc)
 
 _doc = 'A text file with the source of the topo file (GIMP, SRTM, ...).'
 BASENAMES['dem_source'] = ('dem_source.txt', _doc)
@@ -247,13 +247,13 @@ _doc = ('A hypsometry file computed by OGGM and provided in the same format '
 BASENAMES['hypsometry'] = ('hypsometry.csv', _doc)
 
 _doc = 'A list of :py:class:`oggm.Centerline` instances, sorted by flow order.'
-BASENAMES['centerlines'] = ('centerlines.pkl', _doc)
+BASENAMES['centerlines'] = ('centerlines.npz', _doc)
 
 _doc = ('A "better" version of the centerlines, now on a regular spacing '
         'i.e., not on the gridded (i, j) indices. The tails of the '
         'tributaries are cut out to make more realistic junctions. '
         'They are now "1.5D" i.e., with a width.')
-BASENAMES['inversion_flowlines'] = ('inversion_flowlines.pkl', _doc)
+BASENAMES['inversion_flowlines'] = ('inversion_flowlines.npz', _doc)
 
 _doc = 'The historical monthly climate timeseries stored in a netCDF file.'
 BASENAMES['climate_historical'] = ('climate_historical.nc', _doc)
@@ -271,17 +271,17 @@ _doc = 'The monthly GCM climate timeseries stored in a netCDF file.'
 BASENAMES['gcm_data'] = ('gcm_data.nc', _doc)
 
 _doc = 'List of dicts containing the data needed for the inversion.'
-BASENAMES['inversion_input'] = ('inversion_input.pkl', _doc)
+BASENAMES['inversion_input'] = ('inversion_input.npz', _doc)
 
 _doc = 'List of dicts containing the output data from the inversion.'
-BASENAMES['inversion_output'] = ('inversion_output.pkl', _doc)
+BASENAMES['inversion_output'] = ('inversion_output.npz', _doc)
 
 _doc = 'List of flowlines ready to be run by the model.'
-BASENAMES['model_flowlines'] = ('model_flowlines.pkl', _doc)
+BASENAMES['model_flowlines'] = ('model_flowlines.npz', _doc)
 
 _doc = ('When using a linear mass balance for the inversion, this dict stores '
         'the optimal ela_h and grad.')
-BASENAMES['linear_mb_params'] = ('linear_mb_params.pkl', _doc)
+BASENAMES['linear_mb_params'] = ('linear_mb_params.npz', _doc)
 
 _doc = ('A netcdf file containing enough information to reconstruct the '
         'entire flowline glacier geometry along the run (can be expensive '
@@ -308,10 +308,6 @@ BASENAMES['settings'] = ('settings.yml', _doc)
 
 _doc = "A dict containing all observations used during the OGGM workflow."
 BASENAMES['observations'] = ('observations.yml', _doc)
-
-_doc = "A zarr store containing previous pickled data."
-BASENAMES['data_store'] = ('data_store.zarr', _doc)
-
 
 
 def set_logging_config(logging_level='INFO'):
@@ -891,7 +887,7 @@ def add_to_basenames(basename, filename, docstr=''):
     basename : str
         the key (e.g. 'dem', 'model_flowlines')
     filename : str
-        the associated filename (e.g. 'dem.tif', 'model_flowlines.pkl')
+        the associated filename (e.g. 'dem.tif', 'model_flowlines.npz')
     docstr : str
         the associated docstring (for documentation)
     """

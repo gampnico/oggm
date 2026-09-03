@@ -18,7 +18,7 @@ import pickle
 import warnings
 import itertools
 from collections import OrderedDict
-from functools import partial, wraps, lru_cache
+from functools import partial, wraps
 from time import gmtime, strftime
 import fnmatch
 import platform
@@ -32,7 +32,6 @@ import pandas as pd
 import numpy as np
 from scipy import stats
 import xarray as xr
-import zarr
 import shapely.geometry as shpg
 import shapely.affinity as shpa
 from shapely.ops import transform as shp_trafo
@@ -75,7 +74,7 @@ from oggm.utils._funcs import (calendardate_to_hydrodate, date_to_floatyear,
                                weighted_quantile_1d)
 from oggm.utils._downloads import (get_demo_file, get_wgms_files,
                                    get_rgi_glacier_entities)
-import oggm.utils.geozarr as geozarr
+import oggm.utils.serialize as serialize
 from oggm import cfg
 from oggm.exceptions import InvalidParamsError, InvalidWorkflowError
 
@@ -111,19 +110,6 @@ RGI_DATE = {'01': 2009,
 
 # Module logger
 log = logging.getLogger('.'.join(__name__.split('.')[:-1]))
-
-
-@lru_cache(maxsize=1)
-def _warn_zarr_fallback():
-    """Warn once per process that read_store fell back to a pickle.
-
-    During the zarr migration many stores are still pickles, so this
-    fallback is expected and floods the logs. Cached so it only fires
-    once, tests can reset it via ``cache_clear()``.
-    """
-    warnings.warn(
-        "Zarr data not found, attempting to read pickle file instead."
-    )
 
 
 def empty_cache():
@@ -746,9 +732,9 @@ def get_centerline_lonlat(gdir,
     a shapefile
     """
     if flowlines_output or geometrical_widths_output or corrected_widths_output:
-        cls = gdir.read_store('inversion_flowlines')
+        cls = gdir.read_npz('inversion_flowlines')
     else:
-        cls = gdir.read_store('centerlines')
+        cls = gdir.read_npz('centerlines')
 
     exterior = None
     if ensure_exterior_match:
@@ -1743,7 +1729,7 @@ def glacier_statistics(gdir, settings_filesuffix='',
                 vol = []
                 vol_bsl = []
                 vol_bwl = []
-                cl = gdir.read_store('inversion_output')
+                cl = gdir.read_npz('inversion_output')
                 for c in cl:
                     vol.extend(c['volume'])
                     vol_bsl.extend(c.get('volume_bsl', [0]))
@@ -1814,7 +1800,7 @@ def glacier_statistics(gdir, settings_filesuffix='',
 
         try:
             # Centerlines
-            cls = gdir.read_store('centerlines')
+            cls = gdir.read_npz('centerlines')
             longest = 0.
             for cl in cls:
                 longest = np.max([longest, cl.dis_on_line[-1]])
@@ -1828,7 +1814,7 @@ def glacier_statistics(gdir, settings_filesuffix='',
             h = np.array([])
             widths = np.array([])
             slope = np.array([])
-            fls = gdir.read_store('inversion_flowlines')
+            fls = gdir.read_npz('inversion_flowlines')
             dx = fls[0].dx * gdir.grid.dx
             for fl in fls:
                 hgt = fl.surface_h
@@ -2312,7 +2298,7 @@ def climate_statistics(gdir, add_climate_period=1995, halfsize=15,
             # Flowline related stuff
             h = np.array([])
             widths = np.array([])
-            fls = gdir.read_store('inversion_flowlines')
+            fls = gdir.read_npz('inversion_flowlines')
             dx = fls[0].dx * gdir.grid.dx
             for fl in fls:
                 hgt = fl.surface_h
@@ -3311,7 +3297,7 @@ def idealized_gdir(surface_h, widths_m, map_dx, flowline_dx=1,
     fl.widths = widths_m / map_dx
     fl.is_rectangular = np.ones(fl.nx).astype(bool)
 
-    gdir.write_store([fl], 'inversion_flowlines')
+    gdir.write_npz([fl], 'inversion_flowlines')
 
     # Idealized map
     grid = salem.Grid(nxny=(1, 1), dxdy=(map_dx, map_dx), x0y0=(0, 0))
@@ -4063,10 +4049,8 @@ class GlacierDirectory(object):
                 fp += '.gz'
         if os.path.exists(fp):
             return True
-        # check if data exists as a group in zarr store
-        zarr_fp = self.get_filepath("data_store").replace(".pkl", ".zarr")
-        group = f"{filename}{filesuffix}"
-        if os.path.exists(os.path.join(zarr_fp, group)):
+        # Directories written before the npz switch still hold pickles
+        if fp.endswith('.npz') and os.path.exists(fp[:-4] + '.pkl'):
             return True
         return False
 
@@ -4125,6 +4109,9 @@ class GlacierDirectory(object):
                     else cfg.PARAMS['use_compression'])
         _open = gzip.open if use_comp else open
         fp = self.get_filepath(filename, filesuffix=filesuffix)
+        if fp.endswith('.npz'):
+            # These basenames moved to npz; a pickle is the legacy layout
+            fp = fp[:-4] + '.pkl'
         with _open(fp, 'rb') as f:
             try:
                 out = pickle.load(f)
@@ -4149,234 +4136,42 @@ class GlacierDirectory(object):
 
         return out
 
-    def read_zarr(
-        self, filename: str, filesuffix: str = "", chunks:dict=None,engine:str="zarr", consolidated:bool=True, decode_cf:bool=True, *kwargs
-    ) -> xr.DataTree:
-        """Reads a zarr file located in the glacier directory.
+    def read_npz(self, filename, filesuffix=''):
+        """Reads a data file located in the directory.
 
-        The location of the zarr store for a given RGI-ID is invariant.
-        The zarr store is expected to have a group named `filename`
-        (without suffix).
-
-        Parameters
-        ----------
-        filename : str or None
-            File name (must be listed in cfg.BASENAMES). If `None`, the
-            entire zarr store is read.
-        filesuffix : str, optional
-            Append a suffix to the filename (useful for experiments).
-        **kwargs
-            Additional keyword arguments to pass to xarray.open_zarr().
-
-        Returns
-        -------
-        xr.DataTree
-            An xarray.DataTree read from the zarr store.
-        """
-        if chunks is None:
-            chunks = {}
-        fp = self.get_filepath("data_store")
-        if filename == "data_store":
-            group = None
-        else:
-            group = f"{filename}{filesuffix}"
-        out = xr.open_datatree(
-            fp.replace(".pkl", ".zarr"),
-            group=group,
-            chunks=chunks,
-            engine=engine,
-            consolidated=consolidated,
-            decode_cf=decode_cf,
-            *kwargs)
-
-        return out
-
-    def read_store(
-        self, filename: str, filesuffix: str = "", *kwargs
-    ) -> dict | list:
-        """Reads a data store located in the glacier directory.
-
-        Supports pickle and zarr. The location of a zarr store for a
-        given RGI-ID is invariant. A zarr store is expected to have a
-        group named `filename` (without suffix). If the zarr store is
-        not found, automatically falls back to reading a pickle file
-        with the same name (and suffix).
-
-        For backwards compatibility reasons, the output of this method
-        is coerced imto the data structures expected from older pickle
-        files, e.g. all datatrees are converted to flattened
-        dictionaries.
+        The file holds plain numpy arrays plus a short description of how to
+        rebuild the original OGGM objects from them (see
+        :py:mod:`oggm.utils.serialize`). Nothing stored in it refers to an
+        OGGM or a shapely class, so it stays readable across versions of
+        either -- which is the point of the format.
 
         Parameters
         ----------
-        filename : str or None
-            File name (must be listed in cfg.BASENAMES). If `None`, the
-            entire zarr store is read.
-        filesuffix : str, optional
-            Append a suffix to the filename (useful for experiments).
-        **kwargs
-            Additional keyword arguments to pass to xarray.open_zarr().
+        filename : str
+            file name (must be listed in cfg.BASENAME)
+        filesuffix : str
+            append a suffix to the filename (useful for experiments).
 
         Returns
         -------
-        list or dict
-            A list or dictionary of data read from the zarr store.
+        The reconstructed object: a list of flowlines, a dict, ...
         """
+        fp = self.get_filepath(filename, filesuffix=filesuffix)
 
-        try:
-            out = self.read_zarr(
-                filename=filename, filesuffix=filesuffix, *kwargs
-            )
-            out: list | dict = self._validate_store(
-                data_tree=out, group=filename
-            )
-        except (
-            FileNotFoundError,
-            KeyError,
-            ValueError,
-        ):  # fallback to pickle if zarr not found
-            fp = self.get_filepath(filename, filesuffix=filesuffix)
-            if os.path.exists(fp):
-                _warn_zarr_fallback()
-            else:
-                raise FileNotFoundError(
-                    f"No zarr or pickle found for {fp}"
-                )
+        if not os.path.exists(fp):
+            # Legacy layout: directories built before the npz switch store
+            # these as pickles. Keeps existing pre-processed directories
+            # readable until the prepro chain has been regenerated.
+            # TODO: remove once the v1.6 pre-processed directories are gone.
+            if fp.endswith('.npz') and os.path.exists(fp[:-4] + '.pkl'):
+                return self.read_pickle(filename, filesuffix=filesuffix)
+            raise FileNotFoundError(f'No data file found for {fp}')
 
-            out: list | dict = self.read_pickle(
-                filename=filename, use_compression=None, filesuffix=filesuffix
-            )
+        with np.load(fp, allow_pickle=False) as data:
+            meta = json.loads(str(data['__meta__']))
+            arrays = {k: data[k] for k in data.files if k != '__meta__'}
 
-        return out
-
-    def _validate_store(self, data_tree: xr.DataTree, group: str = "") -> dict:
-        """Ensure data structures in a data tree are OGGM-compatible.
-
-        Some data structures used by the old pickle infrastructure
-        cannot be directly written to zarr via xarray. This method
-        ensures data structures within a data tree are compatible with
-        the types expected from older pickle files.
-
-        Parameters
-        ----------
-        data_tree : xarray.DataTree
-            The DataTree to reconstruct into a pickle-compatible
-            dictionary.
-        group : str, optional
-            The group within the zarr store that was read. This may be
-            necessary because the `name` attribute can be missing
-            depending on how the zarr store was read.
-
-        Returns
-        -------
-        dict | list
-            Either coerces a datatree into the dictionary, or
-            returns a list of OGGM objects to match the structures
-            expected from older pickle files.
-        """
-
-        if group:
-            name = group
-        elif data_tree.name:
-            name = data_tree.name
-        else:
-            name = ""
-
-        if "downstream_line" in name:
-            # CAUTION: the downstream_line datatree contains a variable
-            # named downstream_line. Don't mix these up!
-            data_tree = geozarr.get_dict_from_datatree(data_tree)
-            if "downstream_line" in data_tree.keys():
-                data_tree["downstream_line"] = geozarr._validate_linestring(
-                    data_tree["downstream_line"]
-            )
-            if "full_line" in data_tree.keys():
-                data_tree["full_line"] = geozarr._validate_linestring(
-                    data_tree["full_line"]
-                )
-            else:
-                # avoid KeyError when storing as empty child which gets
-                # skipped
-                data_tree["full_line"] = None
-            return data_tree
-        elif "geometries" in name:
-            return geozarr.get_geometries_from_datatree(data_tree)
-        elif "model_flowline" in name:
-            child_keys = list(data_tree.children.keys())
-            if child_keys and all(k.isdigit() for k in child_keys):
-                sorted_keys = sorted(child_keys, key=int)
-                fls = [
-                    geozarr.get_flowline_from_datatree(data_tree[k])
-                    for k in sorted_keys
-                ]
-                # Restore flows_to connections
-                for i, k in enumerate(sorted_keys):
-                    idx_da = geozarr.get_datatree_value(
-                        data_tree[k], "_flows_to_list_idx"
-                    )
-                    if idx_da is not None:
-                        idx = int(idx_da)
-                        if 0 <= idx < len(fls):
-                            fls[i].set_flows_to(fls[idx])
-                return fls
-            # Legacy single-flowline flat structure
-            flowline = geozarr.get_flowline_from_datatree(data_tree=data_tree)
-            return [flowline]
-        elif "centerlines" in name and "inversion" not in name:
-            child_keys = list(data_tree.children.keys())
-            if child_keys and all(k.isdigit() for k in child_keys):
-                sorted_keys = sorted(child_keys, key=int)
-                fls = [
-                    geozarr.get_centerline_from_datatree(data_tree[k])
-                    for k in sorted_keys
-                ]
-                for i, k in enumerate(sorted_keys):
-                    idx_da = geozarr.get_datatree_value(
-                        data_tree[k], "_flows_to_list_idx"
-                    )
-                    if idx_da is not None:
-                        idx = int(idx_da)
-                        if 0 <= idx < len(fls):
-                            fls[i].set_flows_to(fls[idx])
-                return fls
-            # Single centerline (legacy flat)
-            return [geozarr.get_centerline_from_datatree(data_tree=data_tree)]
-        elif "inversion_flowlines" in name:
-            child_keys = list(data_tree.children.keys())
-            if child_keys and all(k.isdigit() for k in child_keys):
-                sorted_keys = sorted(child_keys, key=int)
-                fls = [
-                    geozarr.get_centerline_from_datatree(data_tree[k])
-                    for k in sorted_keys
-                ]
-                # Restore flows_to connections
-                for i, k in enumerate(sorted_keys):
-                    idx_da = geozarr.get_datatree_value(
-                        data_tree[k], "_flows_to_list_idx"
-                    )
-                    if idx_da is not None:
-                        idx = int(idx_da)
-                        if 0 <= idx < len(fls):
-                            fls[i].set_flows_to(fls[idx])
-                return fls
-            # Legacy single-flowline flat structure
-            centerline = geozarr.get_centerline_from_datatree(
-                data_tree=data_tree
-            )
-            return [centerline]
-        elif "inversion_" in name:
-            child_keys = list(data_tree.children.keys())
-            if child_keys and all(k.isdigit() for k in child_keys):
-                # Multi-flowline format w. numbered children, one per flowline
-                return [
-                    geozarr.get_dict_from_datatree(data_tree[k])
-                    for k in sorted(child_keys, key=int)
-                ]
-            # single flowline
-            data_tree = geozarr.get_dict_from_datatree(data_tree)
-            return [data_tree]
-
-        return geozarr.get_dict_from_datatree(data_tree)
+        return serialize.decode(filename, arrays, meta, gdir=self)
 
     def write_pickle(self, var, filename, use_compression=None, filesuffix=''):
         """ Writes a variable to a pickle on disk.
@@ -4393,217 +4188,44 @@ class GlacierDirectory(object):
         filesuffix : str
             append a suffix to the filename (useful for experiments).
         """
-
-        # TODO: disable warning as it tanks performance
-        # warnings.warn(
-        #     "gdir.write_pickle is deprecated and will be replaced "
-        #     "by gdir.write_store in a future OGGM release.",
-        #     PendingDeprecationWarning,
-        #     stacklevel=2,
-        # )
-
         use_comp = (use_compression if use_compression is not None
                     else cfg.PARAMS['use_compression'])
         _open = gzip.open if use_comp else open
         fp = self.get_filepath(filename, filesuffix=filesuffix)
-
-        # avoid serving stale data from a zarr if a user fell back to
-        # using a pickle.
-        group = f"{filename}{filesuffix}"
-        zarr_fp = os.path.join(os.path.dirname(fp), "data_store.zarr")
-        group_dir = os.path.join(zarr_fp, group)
-        if os.path.exists(group_dir):
-            shutil.rmtree(group_dir)
-            try:
-                zarr.consolidate_metadata(zarr_fp)
-            except Exception:
-                pass
-
-        with _open(fp, "wb") as f:
+        if fp.endswith('.npz'):
+            # These basenames moved to npz; a pickle is the legacy layout
+            fp = fp[:-4] + '.pkl'
+        with _open(fp, 'wb') as f:
             pickle.dump(var, f, protocol=4)
 
-    def write_zarr(
-        self,
-        data_tree: xr.DataTree,
-        filename: str = "",
-        filesuffix: str = "",
-        overwrite: bool = False,
-        zarr_format: int = 2,
-        encoding: dict = None,
-    ) -> None:
-        """Write a datatree to Zarr file on disk.
+    def write_npz(self, var, filename, filesuffix=''):
+        """Writes a variable to disk as plain numpy arrays.
 
-        `read_store()` is set up to use the default filename of
-        `data_store` and an empty suffix. Data written to a different
-        location, may not be accessible.
+        The object is encoded by :py:mod:`oggm.utils.serialize`, so the
+        resulting file contains arrays only -- no OGGM or shapely classes.
 
         Parameters
         ----------
-        data_tree : xarray.DataTree
-            The datatree to write to Zarr. This must be Zarr-compatible,
-            so it cannot contain arbitrary Python objects. Use a helper
-            function or `write_store` instead.
-        filename : str, default empty
-            Name of a data store, which must be in cfg.BASENAMES. Note
-            that OGGM will expect data to be stored in `data_store`.
-        filesuffix : str, optional
-            Append a suffix to the filename.
-        overwrite : bool, default True
-            Whether to overwrite existing Zarr contents in the target
-            location.
-        zarr_format : int, default 2
-            Zarr format version to use (2 or 3).
-        encoding : dict, optional
-            A dictionary specifying encoding options for the Zarr output.
-        """       
-
-        fp = self.get_filepath("data_store").replace(".pkl", ".zarr")
-
-        if not fp.endswith(".zarr"):
-            fp = f"{fp}.zarr"
-
-        if cfg.PARAMS["zarr_format"] == 3 and zarr_format == 2:
-            zarr_format = 3
-        elif zarr_format != 2:
-            raise ValueError(
-                f"Invalid zarr_format {zarr_format}. Must be 2 or 3. "
-                "Can be set in params.cfg under `zarr_format`."
-            )
-
-        if overwrite:
-            data_tree.to_zarr(
-                fp,
-                mode="w",
-                consolidated=True,
-                zarr_format=zarr_format,
-                encoding=encoding,
-            )
-        else:
-            """
-            This writes each node's dataset independently to avoid
-            xarray's cross-group alignment validation (different groups
-            with the same dimension names but different sizes).
-            """
-
-            for node in data_tree.subtree:
-                node_ds = node.ds
-                if node_ds is None:
-                    continue
-                if len(node_ds.data_vars) == 0 and len(node_ds.coords) == 0:
-                    continue
-                node_path = node.path.lstrip("/") or None
-                node_ds.to_zarr(
-                    fp,
-                    group=node_path,
-                    mode="a",
-                    zarr_format=zarr_format,
-                    encoding=encoding,
-                    consolidated=False,
-                )
-            zarr.consolidate_metadata(fp)
-
-    def write_store(
-        self,
-        data,
-        filename: str = "",
-        filesuffix: str = "",
-        use_pickle: bool = False,
-        **kwargs,
-    ):
-        """Writes data to disk.
-
-        Parameters
-        ----------
-        data : xr.DataTree | object
-            Data or variable to write to disk
+        var : object
+            the variable to write to disk
         filename : str
-            File name (must be listed in cfg.BASENAME)
+            file name (must be listed in cfg.BASENAME)
         filesuffix : str
-            Append a suffix to the filename (useful for experiments).
-        use_pickle : bool, default True
-            Whether to use pickle for storage. If False, attempts to
-            write to zarr, and falls back to pickle if this fails.
-        **kwargs
-            Additional keyword arguments to pass either to
-            ``write_zarr()`` or ``write_pickle()``.
+            append a suffix to the filename (useful for experiments).
         """
+        arrays, meta = serialize.encode(filename, var, gdir=self)
 
-        if not use_pickle:
-            try:
-                group = f"{filename}{filesuffix}"
-                # Save original data in case of fallback to pickle
-                original_data = data
-                if not isinstance(data, xr.DataTree):
-                    # Distinguish between supported and unsupported list types
-                    if (
-                        isinstance(data, list)
-                        and data
-                        and not isinstance(data[0], dict)
-                    ):
-                        from oggm import Centerline
-                        from oggm.core.flowline import Flowline
-                        _supported = (Centerline, Flowline)
-                        _supported_groups = (
-                            "inversion_flowlines",
-                            "model_flowlines",
-                            "centerlines",
-                        )
-                        is_supported_flowline_list = all(
-                            isinstance(item, _supported) for item in data
-                        ) and any(kw in group for kw in _supported_groups)
-                        if not is_supported_flowline_list:
-                            raise NotImplementedError(
-                                f"Cannot auto-convert list of "
-                                f"{type(data[0]).__name__} to zarr. "
-                                "Falling back to pickle."
-                            )
-                    data = geozarr.convert_pickles_to_datatree(
-                        {f"{group}": data}
-                    )
+        fp = self.get_filepath(filename, filesuffix=filesuffix)
+        # Write through a file object: np.savez would otherwise append '.npz'
+        # to any path that doesn't already end in it, which would silently
+        # rename user-registered basenames (see cfg.add_to_basenames).
+        with open(fp, 'wb') as f:
+            np.savez(f, __meta__=np.array(json.dumps(meta)), **arrays)
 
-                zarr_fp = self.get_filepath("data_store").replace(
-                    ".pkl", ".zarr"
-                )
-                group_dir = os.path.join(zarr_fp, group)
-                """Use shutil to avoid creating mixed-format metadata.
-                (zarr.open_group defaults to v3 which adds a zarr.json
-                alongside the v2 .zgroup file).
-                """
-                if os.path.exists(group_dir):
-                    shutil.rmtree(group_dir)
-                self.write_zarr(
-                    data_tree=data,
-                    filename=filename,
-                    filesuffix=filesuffix,
-                    overwrite=False,
-                    **kwargs,
-                )
-            except Exception as e:
-                """Deal with failed writes.
-                Clean up interrupted group creation and prevent
-                corruption from subsequent writes.
-                """
-                if "group_dir" in locals() and os.path.exists(group_dir):
-                    shutil.rmtree(group_dir)
-                # Re-consolidate metadata so valid groups already in
-                # store stay readable after failed write.
-                if "zarr_fp" in locals() and os.path.exists(zarr_fp):
-                    try:
-                        zarr.consolidate_metadata(zarr_fp)
-                    except Exception:
-                        pass
-                warnings.warn(
-                    f"{e} Failed to write zarr store, falling back to pickle.",
-                    RuntimeWarning,
-                )
-                # Use original_data so pickle doesn't contain a DataTree
-                self.write_pickle(
-                    var=original_data, filename=filename, filesuffix=filesuffix
-                )
-        else:
-            self.write_pickle(
-                var=data, filename=filename, filesuffix=filesuffix, **kwargs
-            )
+        # Don't leave a legacy pickle behind shadowing what we just wrote:
+        # read_pickle is still public API and would serve the stale one.
+        if fp.endswith('.npz') and os.path.exists(fp[:-4] + '.pkl'):
+            os.remove(fp[:-4] + '.pkl')
 
     def read_json(self, filename, filesuffix='', allow_empty=False):
         """Reads a JSON file located in the directory.
@@ -4974,7 +4596,7 @@ class GlacierDirectory(object):
 
         h = np.array([])
         w = np.array([])
-        fls = self.read_store('inversion_flowlines')
+        fls = self.read_npz('inversion_flowlines')
         for fl in fls:
             w = np.append(w, fl.widths)
             h = np.append(h, fl.surface_h)
@@ -5681,14 +5303,6 @@ def copy_to_basedir(gdir, base_dir=None, setup='run'):
         paths = ('*' + p + '*' for p in paths)
         shutil.copytree(gdir.dir, new_dir,
                         ignore=include_patterns(*paths))
-        """
-        include_patterns never ignores directories, so data_store.zarr
-        is copied without internal files, resulting in empty store.
-        Here we remove it so next tasks can create a fresh store.
-        """
-        _replace_zarr_store(gdir.dir, new_dir, "data_store.zarr")
-        _keep_zarr_groups(new_dir, "data_store.zarr",
-                          groups_to_keep=['model_flowlines'])
     elif setup == 'inversion':
         paths = ['inversion_params', 'downstream_line', 'outlines',
                  'inversion_flowlines', 'glacier_grid', 'diagnostics',
@@ -5697,7 +5311,6 @@ def copy_to_basedir(gdir, base_dir=None, setup='run'):
         paths = ('*' + p + '*' for p in paths)
         shutil.copytree(gdir.dir, new_dir,
                         ignore=include_patterns(*paths))
-        _replace_zarr_store(gdir.dir, new_dir, "data_store.zarr")
     elif setup == 'run/spinup':
         paths = ['model_flowlines', 'inversion_params', 'outlines',
                  'settings', 'climate_historical', 'glacier_grid',
@@ -5706,99 +5319,11 @@ def copy_to_basedir(gdir, base_dir=None, setup='run'):
         paths = ('*' + p + '*' for p in paths)
         shutil.copytree(gdir.dir, new_dir,
                         ignore=include_patterns(*paths))
-        _replace_zarr_store(gdir.dir, new_dir, "data_store.zarr")
-        _keep_zarr_groups(new_dir, "data_store.zarr",
-                          groups_to_keep=['model_flowlines'])
     elif setup == 'all':
         shutil.copytree(gdir.dir, new_dir)
     else:
         raise ValueError('setup not understood: {}'.format(setup))
     return GlacierDirectory(gdir.rgi_id, base_dir=base_dir)
-
-
-def _remove_zarr_store(new_dir: str, store: str = "data_store.zarr") -> str:
-    """Remove a zarr store if it exists.
-
-    Parameters
-    ----------
-    new_dir : str
-        The directory where the zarr store is located.
-    store : str, default data_store.zarr
-        The name of the zarr store to remove.
-
-    Returns
-    -------
-    str
-        The path to the zarr store used for new writes.
-    """
-    zarr_store = os.path.join(new_dir, store)
-    if os.path.exists(zarr_store):
-        shutil.rmtree(zarr_store)
-    return zarr_store
-
-
-def _replace_zarr_store(src_dir: str, new_dir: str,
-                        store: str = "data_store.zarr") -> None:
-    """Replace an incomplete zarr store copy with a full copy from source.
-
-    ``include_patterns`` in ``copy_to_basedir`` copies the zarr store
-    directory hierarchy but not the data chunk files inside it (because
-    chunk files don't match the include patterns).  This function removes
-    that empty shell and copies the full store from *src_dir*.
-
-    Parameters
-    ----------
-    src_dir : str
-        The source glacier directory containing the zarr store.
-    new_dir : str
-        The destination glacier directory where the zarr store was copied.
-    store : str, default "data_store.zarr"
-        Name of the zarr store subdirectory.
-    """
-    dst_zarr = _remove_zarr_store(new_dir, store)
-    src_zarr = os.path.join(src_dir, store)
-    if os.path.exists(src_zarr):
-        shutil.copytree(src_zarr, dst_zarr)
-
-
-def _keep_zarr_groups(
-    new_dir: str, store: str = "data_store.zarr", groups_to_keep: list = None
-) -> None:
-    """Remove zarr groups from a store that are not in groups_to_keep.
-
-    A group name matches a keep pattern if it equals the pattern or starts
-    with ``pattern + '_'`` (to handle filesuffix variants).
-
-    Parameters
-    ----------
-    new_dir : str
-        The directory containing the zarr store.
-    store : str, default "data_store.zarr"
-        Name of the zarr store subdirectory.
-    groups_to_keep : list of str, optional
-        Group name prefixes to retain. All other groups are removed.
-        If None or empty, nothing is removed.
-    """
-    if not groups_to_keep:
-        return
-    zarr_store = os.path.join(new_dir, store)
-    if not os.path.exists(zarr_store):
-        return
-    removed = False
-    for name in list(os.listdir(zarr_store)):
-        group_path = os.path.join(zarr_store, name)
-        if not os.path.isdir(group_path):
-            continue
-        if not any(
-            name == kw or name.startswith(kw + "_") for kw in groups_to_keep
-        ):
-            shutil.rmtree(group_path)
-            removed = True
-    if removed:
-        try:
-            zarr.consolidate_metadata(zarr_store)
-        except Exception:
-            pass
 
 
 def initialize_merged_gdir(main, tribs=[], glcdf=None,
@@ -5840,7 +5365,7 @@ def initialize_merged_gdir(main, tribs=[], glcdf=None,
     tribs = tolist(tribs)
 
     # read flowlines of the Main glacier
-    mfls = main.read_store('model_flowlines')
+    mfls = main.read_npz('model_flowlines')
 
     # ------------------------------
     # 0. create the new GlacierDirectory from main glaciers GeoDataFrame
@@ -5854,7 +5379,7 @@ def initialize_merged_gdir(main, tribs=[], glcdf=None,
     # add tributary geometries to maindf
     merged_geometry = maindf.loc[idx, 'geometry'].iloc[0].buffer(0)
     for trib in tribs:
-        geom = trib.read_store('geometries')['polygon_hr']
+        geom = trib.read_npz('geometries')['polygon_hr']
         geom = salem.transform_geometry(geom, crs=trib.grid)
         merged_geometry = merged_geometry.union(geom).buffer(0)
 
@@ -5939,7 +5464,7 @@ def initialize_merged_gdir(main, tribs=[], glcdf=None,
         mfls[nr] = fl
 
     # Write the reprojecflowlines
-    merged.write_store(mfls, 'model_flowlines')
+    merged.write_npz(mfls, 'model_flowlines')
 
     return merged
 

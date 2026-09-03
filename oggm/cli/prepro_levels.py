@@ -29,6 +29,7 @@ from oggm.exceptions import InvalidParamsError, InvalidDEMError, InvalidWorkflow
 
 # Module logger
 from oggm.utils import get_prepro_base_url, file_downloader
+from oggm.utils._downloads import get_lock
 
 log = logging.getLogger(__name__)
 
@@ -738,7 +739,6 @@ def run_prepro_levels(rgi_version=None, rgi_reg=None, border=None,
 
     # Try to avoid concurrency
     if rgi_version == '70C':
-        from oggm.utils._downloads import get_lock
         with get_lock():
             fp = file_downloader('https://cluster.klima.uni-bremen.de/~oggm/'
                                 'ref_mb_params/oggm_v1.6/inv_rgi7/'
@@ -763,7 +763,7 @@ def run_prepro_levels(rgi_version=None, rgi_reg=None, border=None,
             with get_lock():
                 fs = utils.file_downloader(fs_url + 'chosen_dem_RGI70C_20251029.csv')
                 dfs = pd.read_csv(fs, index_col=0)
-                rgidf['dem_sourc`e'] = dfs.loc[rgidf['rgi_id'], 'dem_source'].values
+                rgidf['dem_source'] = dfs.loc[rgidf['rgi_id'], 'dem_source'].values
 
     # L0 - go
     if start_level == 0:

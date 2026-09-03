@@ -1560,9 +1560,9 @@ class SfcTypeTIModel(MassBalanceModel):
             if self.hbins is not None:
                 _fl = None
             elif use_main_fl_from == 'inversion_flowlines':
-                _fl = self.gdir.read_store("inversion_flowlines")[-1]
+                _fl = self.gdir.read_npz("inversion_flowlines")[-1]
             elif use_main_fl_from == 'model_flowlines':
-                _fl = self.gdir.read_store("model_flowlines")[-1]
+                _fl = self.gdir.read_npz("model_flowlines")[-1]
             else:
                 raise InvalidParamsError("We need a flowline or height bins "
                                          "(hbins) for defining the number of "
@@ -3141,7 +3141,7 @@ class ConstantMassBalance(MassBalanceModel):
 
         # This is a quick'n dirty optimisation
         try:
-            fls = gdir.read_store('model_flowlines')
+            fls = gdir.read_npz('model_flowlines')
             h = []
             for fl in fls:
                 # We use bed because of overdeepenings
@@ -3620,12 +3620,12 @@ class MultipleFlowlineMassBalance(MassBalanceModel):
 
         # Read in the flowlines
         if use_inversion_flowlines:
-            fls = gdir.read_store('inversion_flowlines',
+            fls = gdir.read_npz('inversion_flowlines',
                                    filesuffix=flowlines_filesuffix)
 
         if fls is None:
             try:
-                fls = gdir.read_store('model_flowlines',
+                fls = gdir.read_npz('model_flowlines',
                                        filesuffix=flowlines_filesuffix)
             except FileNotFoundError:
                 raise InvalidWorkflowError('Need a valid `model_flowlines` '
@@ -3989,7 +3989,7 @@ class MultipleFlowlineMassBalance(MassBalanceModel):
         # re-read flowlines from disk).
         obj = object.__new__(cls)
         try:
-            obj.fls = gdir.read_store('model_flowlines')
+            obj.fls = gdir.read_npz('model_flowlines')
         except FileNotFoundError:
             obj.fls = None
         obj.gdir = gdir
@@ -4253,7 +4253,7 @@ def mb_calibration_to_rmsd(gdir, *,
         temp_bias_max = gdir.settings['temp_bias_max']
 
     if not use_2d_mb:
-        fls = gdir.read_store('inversion_flowlines')
+        fls = gdir.read_npz('inversion_flowlines')
     else:
         # if the 2D data is used, the flowline is not needed.
         fls = None
@@ -4900,7 +4900,7 @@ def mb_calibration_from_scalar_mb(gdir, *,
                                  'at the same time.')
 
     if not use_2d_mb:
-        fls = gdir.read_store('inversion_flowlines')
+        fls = gdir.read_npz('inversion_flowlines')
     else:
         # if the 2D data is used, the flowline is not needed.
         fls = None
@@ -5330,7 +5330,7 @@ def apparent_mb_from_linear_mb(gdir, settings_filesuffix:str='',
 
     # For each flowline compute the apparent MB
     rho = gdir.settings['ice_density']
-    fls = gdir.read_store('inversion_flowlines')
+    fls = gdir.read_npz('inversion_flowlines')
     # Reset flux
     for fl in fls:
         fl.flux = np.zeros(len(fl.surface_h))
@@ -5342,8 +5342,8 @@ def apparent_mb_from_linear_mb(gdir, settings_filesuffix:str='',
 
     # Check and write
     _check_terminus_mass_flux(gdir, fls)
-    gdir.write_store(fls, 'inversion_flowlines')
-    gdir.write_store({'ela_h': ela_h, 'grad': mb_gradient},
+    gdir.write_npz(fls, 'inversion_flowlines')
+    gdir.write_npz({'ela_h': ela_h, 'grad': mb_gradient},
                      'linear_mb_params')
 
 
@@ -5413,7 +5413,7 @@ def apparent_mb_from_any_mb(gdir, settings_filesuffix='',
     is_calving = cmb != 0
 
     # For each flowline compute the apparent MB
-    fls = gdir.read_store('inversion_flowlines', filesuffix=input_filesuffix)
+    fls = gdir.read_npz('inversion_flowlines', filesuffix=input_filesuffix)
 
     if mb_model is None:
         mb_model = MultipleFlowlineMassBalance(
@@ -5492,7 +5492,7 @@ def apparent_mb_from_any_mb(gdir, settings_filesuffix='',
     if settings_filesuffix == '':
         gdir.add_to_diagnostics('apparent_mb_from_any_mb_residual', residual)
 
-    gdir.write_store(fls, 'inversion_flowlines', filesuffix=output_filesuffix)
+    gdir.write_npz(fls, 'inversion_flowlines', filesuffix=output_filesuffix)
 
 
 @entity_task(log)

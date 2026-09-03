@@ -1675,7 +1675,7 @@ class TestStartFromV14:
 
         assert gdir.get_climate_info()
         # This we can read
-        gdir.read_store('inversion_flowlines')
+        gdir.read_npz('inversion_flowlines')
 
         df = utils.compile_glacier_statistics(gdirs)
         assert 'dem_med_elev' in df

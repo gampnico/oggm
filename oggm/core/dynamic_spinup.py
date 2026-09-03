@@ -3,7 +3,6 @@
 import logging
 import copy
 import os
-import shutil
 import warnings
 from functools import partial
 import inspect
@@ -418,7 +417,7 @@ def run_dynamic_spinup(gdir, settings_filesuffix='',
                         "with a more recent version of OGGM. While this is "
                         "possible be aware that the handling of observations "
                         "has changed. TODO: add link once new OGGM is released")
-            fls_ref = gdir.read_store('model_flowlines',
+            fls_ref = gdir.read_npz('model_flowlines',
                                        filesuffix=model_flowlines_filesuffix)
             ref_volume_m3 = {'value': np.sum([f.volume_m3 for f in fls_ref]),
                              'year': gdir.rgi_date + 1}
@@ -501,7 +500,7 @@ def run_dynamic_spinup(gdir, settings_filesuffix='',
         init_model_fls = fmod.fls
 
     if init_model_fls is None:
-        fls_spinup = gdir.read_store('model_flowlines',
+        fls_spinup = gdir.read_npz('model_flowlines',
                                       filesuffix=model_flowlines_filesuffix)
     else:
         fls_spinup = copy.deepcopy(init_model_fls)
@@ -1430,7 +1429,7 @@ def dynamic_melt_f_run_with_dynamic_spinup(
                         "possible be aware that the handling of observations "
                         "has changed. TODO: add link once new OGGM is released")
             ref_volume_m3 = {}
-            fls_ref = gdir.read_store('model_flowlines',
+            fls_ref = gdir.read_npz('model_flowlines',
                                        filesuffix=model_flowlines_filesuffix)
             ref_volume_m3['value'] = np.sum([f.volume_m3 for f in fls_ref])
             ref_volume_m3['year'] = gdir.rgi_date
@@ -1469,7 +1468,7 @@ def dynamic_melt_f_run_with_dynamic_spinup(
                               getattr(fl_orig, 'bed_h'))
                        for fl_prov, fl_orig in
                        zip(fls_init,
-                           gdir.read_store(
+                           gdir.read_npz(
                                'model_flowlines',
                                filesuffix=model_flowlines_filesuffix))]):
             raise InvalidWorkflowError('If you want to perform a dynamic '
@@ -1761,20 +1760,10 @@ def dynamic_melt_f_run_with_dynamic_spinup_fallback(
                     ref_volume_m3=gdir.observations['ref_volume_m3']['value'],
                     ref_volume_year=gdir.observations['ref_volume_m3']['year'],
                     add_to_log_file=False)
-    if os.path.isfile(os.path.join(gdir.dir,
-                                   'model_flowlines_dyn_melt_f_calib.pkl')):
-        os.remove(os.path.join(gdir.dir,
-                               'model_flowlines_dyn_melt_f_calib.pkl'))
-    zarr_fp = gdir.get_filepath("data_store").replace(".pkl", ".zarr")
-    zarr_group = os.path.join(zarr_fp, "model_flowlines__dyn_melt_f_calib")
-    if os.path.exists(zarr_group):
-        shutil.rmtree(zarr_group)
-        try:
-            import zarr as _zarr
-
-            _zarr.consolidate_metadata(zarr_fp)
-        except Exception:
-            pass
+    for ext in ('.npz', '.pkl'):
+        fp = os.path.join(gdir.dir, 'model_flowlines_dyn_melt_f_calib' + ext)
+        if os.path.isfile(fp):
+            os.remove(fp)
 
     if target_yr is None:
         target_yr = gdir.rgi_date + 1  # + 1 converted to hydro years
@@ -2392,7 +2381,7 @@ def run_dynamic_melt_f_calibration(
         init_model_fls = fmod.fls
 
     if init_model_fls is None:
-        fls_init = gdir.read_store('model_flowlines',
+        fls_init = gdir.read_npz('model_flowlines',
                                     filesuffix=model_flowlines_filesuffix)
     else:
         fls_init = copy.deepcopy(init_model_fls)
