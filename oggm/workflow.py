@@ -44,17 +44,6 @@ ICEBOOST_V2_FILES = {
 CONSENSUS_REF_TABLE_URL = ('https://cluster.klima.uni-bremen.de/~oggm/g2ti/'
                            'rgi62_itmix_df_v20260617.parquet')
 
-"""
-For dealing with multiprocessing with fork. Child processes must reset
-zarr's async globals so they don't inherit stale references that cause
-deadlocks when starting new I/O threads.
-"""
-try:
-    from zarr.core.sync import reset_resources_after_fork as _zarr_reset
-    os.register_at_fork(after_in_child=_zarr_reset)
-except (ImportError, AttributeError):
-    pass
-
 # Multiprocessing Pool
 _mp_manager = None
 _mp_pool = None
@@ -155,25 +144,6 @@ def reset_multiprocessing():
         _mp_manager.shutdown()
         _mp_manager = None
     cfg.CONFIG_MODIFIED = False
-    # Flush zarr's background async I/O threads so they don't deadlock
-    # child processes after fork
-    try:
-        import zarr.core.sync as _zs
-
-        _iothread = _zs.iothread[0]  # save ref before cleanup clears it
-        _loop = _zs.loop[0]
-        if _loop is not None and not _loop.is_closed():
-            _exc = getattr(_loop, "_default_executor", None)
-            if _exc is not None:
-                _exc.shutdown(wait=True)
-                _loop._default_executor = None
-        _zs.cleanup_resources()
-        # cleanup_resources() waits only 0.2 s for iothread; ensure it is
-        # truly dead before any subsequent fork (Pool/Manager creation).
-        if _iothread is not None and _iothread.is_alive():
-            _iothread.join(timeout=5.0)  # TODO: Play around with timeout
-    except Exception:
-        pass
 
 
 def execute_entity_task(task, gdirs, **kwargs):

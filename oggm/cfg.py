@@ -309,8 +309,8 @@ BASENAMES['settings'] = ('settings.yml', _doc)
 _doc = "A dict containing all observations used during the OGGM workflow."
 BASENAMES['observations'] = ('observations.yml', _doc)
 
-_doc = "A zarr store containing previous pickled data."
-BASENAMES['data_store'] = ('data_store.zarr', _doc)
+_doc = "A store of npz files containing previously pickled data."
+BASENAMES['data_store'] = ('data_store', _doc)
 
 
 

@@ -1,151 +1,777 @@
-"""Zarr utilities for OGGM."""
+"""Data store utilities for OGGM.
 
-import xarray as xr
-from pathlib import Path
+Encode and decode glacier directory data stores.
+"""
+
 import numpy as np
-import os
 import shapely
-
-import pyproj
 from salem import Grid, wgs84
 from functools import partial
 from typing import Callable, Any
 
+SCHEMA_VERSION = 1
 
-def get_pickle_paths(directory: str | Path) -> list[Path]:
-    """Get file paths for all available pickles in a directory.
+
+def _join_path(path: str, key: str) -> str:
+    """Join a key onto an array path.
 
     Parameters
     ----------
-    directory : str or Path
-        Path to the directory containing the pickles.
+    path : str
+        Path of the parent node, empty at the root.
+    key : str
+        Key of the child node.
+s
+    Returns
+    -------
+    str
+        The child's array path.
+    """
+    return f"{path}/{key}" if path else str(key)
+
+
+def _is_packable_array_list(obj: list) -> bool:
+    """Check whether a list of arrays can be packed into one array.
+
+    Parameters
+    ----------
+    obj : list
+        The list to check.
 
     Returns
     -------
-    list[Path]
-        A list of file paths to all the pickles in the directory.
+    bool
+        True if every item is an array that concatenates along the first
+        axis without losing its dtype or trailing shape.
     """
+    if not obj or not all(isinstance(a, np.ndarray) for a in obj):
+        return False
+    first = obj[0]
+    if first.ndim == 0 or first.dtype == object:
+        return False
 
-    return [Path(f) for f in os.listdir(directory) if f[-4:] == ".pkl"]
+    return all(
+        a.dtype == first.dtype and a.shape[1:] == first.shape[1:] for a in obj
+    )
 
 
-def get_tranche(data: dict, type_only: bool = False) -> dict:
-    """Extract a tranche of data from a dictionary.
+# Attributes of a Centerline that its constructor does not take
+_CENTERLINE_ATTRS = (
+    "order",
+    "_widths",
+    "is_rectangular",
+    "is_trapezoid",
+    "apparent_mb",
+    "flux",
+    "flux_out",
+    "flux_needs_correction",
+    "geometrical_widths",
+)
+
+# Constructor arguments shared by Centerline and every Flowline
+_CENTERLINE_ARGS = (
+    "line",
+    "dx",
+    "surface_h",
+    "orig_head",
+    "rgi_id",
+    "map_dx",
+)
+
+
+# Constructor arguments shared by every Flowline subclass
+_FLOWLINE_ARGS = (
+    "line",
+    "dx",
+    "map_dx",
+    "surface_h",
+    "bed_h",
+    "rgi_id",
+    "water_level",
+)
+
+# Attributes of a Flowline that its constructor does not take
+_FLOWLINE_ATTRS = (
+    "order",
+    "calving_bucket_m3",
+    "min_ice_thick_for_length",
+    "glacier_length_method",
+)
+
+"""Bed parameters, by subclass
+The value stored is not always the attribute of the same name
+(see _get_bed_parameter()."""
+_FLOWLINE_BED_ARGS = {
+    "MixedBedFlowline": (
+        "section",
+        "bed_shape",
+        "is_trapezoid",
+        "lambdas",
+        "widths_m",
+    ),
+    "ParabolicBedFlowline": ("bed_shape",),
+    "RectangularBedFlowline": ("widths",),
+    "TrapezoidalBedFlowline": ("widths", "lambdas"),
+}
+
+# Cached arrays for MixedBedFlowline
+_MIXED_BED_CACHES = ("_sqrt_bed", "_w0_m")
+
+
+def _get_bed_parameter(flowline, name: str):
+    """Get a bed parameter in the form its constructor expects.
 
     Parameters
     ----------
-    data : dict
-        The input dictionary to extract the tranche from.
-    type_only : bool, default True
-        If True, only the types of the data will be extracted. If False,
-        the actual data will be extracted.
+    flowline : oggm.core.flowline.Flowline
+        The flowline to read from.
+    name : str
+        Name of the constructor argument.
+
+    Returns
+    -------
+    Any
+        The value to store for `name`.
     """
-    tranche = {}
-    for k, v in data.items():
-        if not type_only:
-            tranche[k] = v
-        else:
-            tranche[k] = type(v)
-    return tranche
+    from oggm.core.flowline import (
+        MixedBedFlowline,
+        RectangularBedFlowline,
+        TrapezoidalBedFlowline,
+    )
+
+    if name == "lambdas":
+        if isinstance(flowline, MixedBedFlowline):
+            # Mixed keeps the lambdas, with NaNs off trapezoids.
+            lambdas = getattr(flowline, "lambdas", None)
+            return flowline._lambdas if lambdas is None else lambdas
+        if isinstance(flowline, TrapezoidalBedFlowline):
+            return flowline._lambdas
+    if name == "widths" and isinstance(flowline, RectangularBedFlowline):
+        return flowline._widths
+
+    return getattr(flowline, name, None)
 
 
-def filter_arrays_from_dict(x: dict) -> dict:
-    """Get all numpy array-type items from a dictionary."""
-    return {k: v for k, v in x.items() if isinstance(v, np.ndarray)}
-
-
-def filter_lists_from_dict(x: dict) -> dict:
-    """Filter list-type items from a dictionary."""
-    return {k: v for k, v in x.items() if isinstance(v, list)}
-
-
-def get_pickle_data(pickle_files: list[Path], gdir, type_only: bool = False):
-    """Read pickle files and extract their data into a dictionary.
+def _is_centerline_list(obj: list) -> bool:
+    """Check whether a list holds only Centerlines or Flowlines.
 
     Parameters
     ----------
-    pickle_files : list[Path]
-        Paths to pickle files.
-    gdir : oggm.GlacierDirectory
-        GlacierDirectory object from which the pickles are read.
-    type_only : bool, default False
-        If True, only the types of the data will be extracted. If False,
-        the actual data will be extracted.
+    obj : list
+        The list to check.
+
+    Returns
+    -------
+    bool
+        True if every item is a Centerline, which includes every
+        Flowline subclass.
+    """
+    from oggm import Centerline
+
+    return bool(obj) and all(isinstance(item, Centerline) for item in obj)
+
+
+def encode_centerline_list(obj: list, path: str, arrays: dict) -> dict:
+    """Encode a list of Centerlines or Flowlines.
+
+    Parameters
+    ----------
+    obj : list
+        The Centerlines or Flowlines to encode.
+    path : str
+        Path of this node within the tree, used to key its arrays.
+    arrays : dict
+        Mapping of array keys to arrays, updated in place.
 
     Returns
     -------
     dict
-        A dictionary with the pickle base names as keys and the
-        extracted data as values, or their types if `type_only` is True.
+        A JSON-compatible description of the list.
     """
-    pickle_data = {}
-    for pickle in pickle_files:
-        try:
-            stem = gdir.read_pickle(pickle.stem)
-            if isinstance(stem, list):
-                slices = []
-                for i in stem:
-                    if isinstance(i, dict):
-                        slices.append(get_tranche(i, type_only=type_only))
-                    else:
-                        slices.append(type(i))
-                pickle_data[pickle.stem] = slices
-            elif isinstance(stem, dict):
-                pickle_data[pickle.stem] = get_tranche(
-                    stem, type_only=type_only
-                )
-            else:
-                print(f"Pickle {pickle.stem} not parseable.")
-        except Exception as e:
-            print(e)
-            print(
-                f"Pickle {pickle.stem} of type {type(pickle.stem)} not parseable."
+    from oggm.core.flowline import Flowline
+
+    indices = {id(item): i for i, item in enumerate(obj)}
+    items = []
+    for i, item in enumerate(obj):
+        cls_name = type(item).__name__
+        if isinstance(item, Flowline):
+            fields = _encode_flowline_fields(item, cls_name)
+        else:
+            fields = {
+                name: getattr(item, name, None)
+                for name in _CENTERLINE_ARGS + _CENTERLINE_ATTRS
+            }
+        item_path = _join_path(path, str(i))
+        flows_to = getattr(item, "flows_to", None)
+        node = {
+            "class": cls_name,
+            "fields": {
+                name: encode_node(value, _join_path(item_path, name), arrays)
+                for name, value in fields.items()
+            },
+            "flows_to": (
+                indices.get(id(flows_to), -1) if flows_to is not None else -1
+            ),
+        }
+        map_trafo = getattr(item, "map_trafo", None)
+        if map_trafo is not None:
+            # A partial cannot be serialised, so store the grid it binds.
+            node["grid"] = get_grid_params_from_partial(map_trafo)
+        items.append(node)
+
+    return {"t": "centerline_list", "items": items}
+
+
+def _encode_flowline_fields(flowline, cls_name: str) -> dict:
+    """Collect the attributes needed to rebuild a Flowline.
+
+    Parameters
+    ----------
+    flowline : oggm.core.flowline.Flowline
+        The flowline to read from.
+    cls_name : str
+        Name of its concrete subclass.
+
+    Returns
+    -------
+    dict
+        Attribute names mapped to the values to store.
+    """
+    fields = {
+        name: getattr(flowline, name, None)
+        for name in _FLOWLINE_ARGS + _FLOWLINE_ATTRS
+    }
+    for name in _FLOWLINE_BED_ARGS.get(cls_name, ()):
+        fields[name] = _get_bed_parameter(flowline, name)
+    if cls_name == "MixedBedFlowline":
+        fields.update(
+            {name: getattr(flowline, name, None) for name in _MIXED_BED_CACHES}
+        )
+
+    return fields
+
+
+def decode_centerline_list(node: dict, arrays: dict) -> list:
+    """Reconstruct a list of Centerlines or Flowlines.
+
+    Inverse of :func:`encode_centerline_list`.
+
+    Parameters
+    ----------
+    node : dict
+        The encoded list node.
+    arrays : dict
+        Mapping of array keys to arrays, as read from the npz file.
+
+    Returns
+    -------
+    list
+        The reconstructed Centerlines or Flowlines.
+    """
+    from oggm import Centerline
+
+    lines = []
+    for item in node["items"]:
+        fields = {
+            name: decode_node(child, arrays)
+            for name, child in item["fields"].items()
+        }
+        cls_name = item["class"]
+        if cls_name in _FLOWLINE_BED_ARGS:
+            line = _decode_flowline(cls_name, fields, item.get("grid"))
+        else:
+            line = Centerline(
+                **{name: fields[name] for name in _CENTERLINE_ARGS}
             )
+            for name in _CENTERLINE_ATTRS:
+                setattr(line, name, fields[name])
+        lines.append(line)
 
-    return pickle_data
+    for line, item in zip(lines, node["items"]):
+        index = item["flows_to"]
+        if 0 <= index < len(lines):
+            line.set_flows_to(lines[index])
 
-
-"""Convert data into zarr-compatible structures."""
-
-
-def _validate_linestring(
-    line: xr.DataArray | shapely.LineString,
-) -> shapely.LineString | None:
-    """Coerce an object into a LineString.
-
-    Parameters
-    ----------
-    line : xr.DataArray or shapely.LineString
-        The input object to validate.
-
-    Returns
-    -------
-    shapely.LineString or None
-        A LineString object, or None if the input is None.
-    """
-    if not isinstance(line, shapely.LineString) and (line is not None):
-        line = shapely.LineString(line)
-    return line
+    return lines
 
 
-def _validate_polygon(
-    polygon: xr.DataArray | shapely.Polygon,
-) -> shapely.Polygon | None:
-    """Coerce an object into a Polygon.
+def get_map_trafo_from_grid_params(grid: dict | None) -> Callable | None:
+    """Rebuild the map transformation from stored grid parameters.
+
+    Flowlines built without a glacier directory, e.g. in the PyGEM
+    sandbox, have no grid to store, so they come back without a
+    transformation.
 
     Parameters
     ----------
-    polygon : xr.DataArray or shapely.Polygon
-        The input object to validate.
+    grid : dict or None
+        Grid parameters, as collected by
+        :func:`get_grid_params_from_partial`.
 
     Returns
     -------
-    shapely.Polygon or None
-        A Polygon, or None if the input is None.
+    Callable or None
+        A partial mapping grid coordinates to WGS84, or None when no
+        grid was stored.
     """
-    if not isinstance(polygon, shapely.Polygon) and (polygon is not None):
-        polygon = shapely.Polygon(polygon)
-    return polygon
+    if not grid:
+        return None
+    map_trafo = Grid(
+        proj=grid["pyproj_srs"],
+        nxny=tuple(grid["nxny"]),
+        dxdy=tuple(grid["dxdy"]),
+        x0y0=tuple(grid["x0y0"]),
+        pixel_ref=grid["pixel_ref"],
+    )
+
+    return partial(map_trafo.ij_to_crs, crs=wgs84)
+
+
+def _decode_flowline(cls_name: str, fields: dict, grid: dict | None):
+    """Rebuild a Flowline of the subclass it was stored as.
+
+    Parameters
+    ----------
+    cls_name : str
+        Name of the concrete Flowline subclass.
+    fields : dict
+        The decoded attributes, as collected by
+        :func:`_encode_flowline_fields`.
+    grid : dict or None
+        Grid parameters for `map_trafo`, absent for flowlines built
+        without a glacier directory.
+
+    Returns
+    -------
+    oggm.core.flowline.Flowline
+        The reconstructed flowline.
+    """
+    from oggm.core import flowline as oggm_flowline
+
+    cls = getattr(oggm_flowline, cls_name)
+    kwargs = {name: fields[name] for name in _FLOWLINE_ARGS}
+    kwargs.update({name: fields[name] for name in _FLOWLINE_BED_ARGS[cls_name]})
+    flowline = cls(**kwargs)
+    for name in _FLOWLINE_ATTRS:
+        setattr(flowline, name, fields[name])
+    if cls_name == "MixedBedFlowline":
+        for name in _MIXED_BED_CACHES:
+            setattr(flowline, name, fields[name])
+    flowline.map_trafo = get_map_trafo_from_grid_params(grid)
+
+    return flowline
+
+
+def _is_multilinestring_list(obj: list) -> bool:
+    """Check whether a list holds only MultiLineStrings.
+
+    Parameters
+    ----------
+    obj : list
+        The list to check.
+
+    Returns
+    -------
+    bool
+        True if every item is a MultiLineString.
+    """
+    return bool(obj) and all(
+        isinstance(item, shapely.MultiLineString) for item in obj
+    )
+
+
+def _encode_polygon(
+    obj: shapely.Polygon | shapely.MultiPolygon, path: str, arrays: dict
+) -> dict:
+    """Encode a (Multi)Polygon as flattened rings.
+
+    Every ring of every part is concatenated into one vertex array,
+    alongside the index arrays needed to split it back up.
+
+    Parameters
+    ----------
+    obj : shapely.Polygon or shapely.MultiPolygon
+        The geometry to encode.
+    path : str
+        Path of this node within the tree, used to key its arrays.
+    arrays : dict
+        Mapping of array keys to arrays, updated in place.
+
+    Returns
+    -------
+    dict
+        A JSON-compatible description of the geometry.
+    """
+    rings = _extract_polygon_coords(obj)
+    arrays[_join_path(path, "vertices")] = (
+        np.concatenate([r[0] for r in rings], axis=0)
+        if rings
+        else np.zeros((0, 2), dtype=np.float64)
+    )
+    arrays[_join_path(path, "ring_lengths")] = np.array(
+        [len(r[0]) for r in rings], dtype=np.int64
+    )
+    arrays[_join_path(path, "ring_poly_idx")] = np.array(
+        [r[1] for r in rings], dtype=np.int64
+    )
+    arrays[_join_path(path, "ring_is_exterior")] = np.array(
+        [r[2] for r in rings], dtype=bool
+    )
+
+    # A MultiPolygon can hold a single part, so record the type.
+    return {
+        "t": "polygon",
+        "k": path,
+        "multi": isinstance(obj, shapely.MultiPolygon),
+    }
+
+
+def _encode_multilinestring_list(obj: list, path: str, arrays: dict) -> dict:
+    """Encode a list of MultiLineStrings into flat arrays.
+
+    Parameters
+    ----------
+    obj : list
+        The MultiLineStrings to encode.
+    path : str
+        Path of this node within the tree, used to key its arrays.
+    arrays : dict
+        Mapping of array keys to arrays, updated in place.
+
+    Returns
+    -------
+    dict
+        A JSON-compatible description of the list.
+    """
+    coords, line_lengths, member_counts = [], [], []
+    for width in obj:
+        count = 0
+        for member in width.geoms:
+            if member.is_empty:
+                continue
+            member_coords = shapely.get_coordinates(member)
+            coords.append(member_coords)
+            line_lengths.append(len(member_coords))
+            count += 1
+        member_counts.append(count)
+    arrays[_join_path(path, "vertices")] = (
+        np.concatenate(coords, axis=0)
+        if coords
+        else np.zeros((0, 2), dtype=np.float64)
+    )
+    arrays[_join_path(path, "line_lengths")] = np.array(
+        line_lengths, dtype=np.int64
+    )
+    arrays[_join_path(path, "member_counts")] = np.array(
+        member_counts, dtype=np.int64
+    )
+
+    return {"t": "multilinestring_list", "k": path}
+
+
+def _encode_array_list(obj: list, path: str, arrays: dict) -> dict:
+    """Encode a ragged list of arrays as one array plus its lengths.
+
+    Parameters
+    ----------
+    obj : list
+        The arrays to encode, as accepted by
+        :func:`_is_packable_array_list`.
+    path : str
+        Path of this node within the tree, used to key its arrays.
+    arrays : dict
+        Mapping of array keys to arrays, updated in place.
+
+    Returns
+    -------
+    dict
+        A JSON-compatible description of the list.
+    """
+    arrays[_join_path(path, "vertices")] = np.concatenate(obj, axis=0)
+    arrays[_join_path(path, "lengths")] = np.array(
+        [len(a) for a in obj], dtype=np.int64
+    )
+
+    return {"t": "array_list", "k": path}
+
+
+def encode_node(obj: Any, path: str, arrays: dict) -> dict:
+    """Encode an object into a JSON-compatible node.
+
+    Any array encountered is stored in `arrays` under a key derived from
+    `path`, so that the node itself stays JSON-serialisable.
+
+    TODO: Refactor for legibility, e.g. by splitting.
+
+    Parameters
+    ----------
+    obj : Any
+        The object to encode.
+    path : str
+        Path of this node within the tree, used to key its arrays.
+    arrays : dict
+        Mapping of array keys to arrays, updated in place.
+
+    Returns
+    -------
+    dict
+        A JSON-compatible description of `obj`.
+
+    Raises
+    ------
+    TypeError
+        If `obj` is of a type the codec cannot represent.
+    """
+    if obj is None:
+        return {"t": "none"}
+    if isinstance(obj, np.ndarray):
+        if obj.dtype == object:
+            raise TypeError("Cannot encode an object-dtype array.")
+        arrays[path] = obj
+        return {"t": "array", "k": path}
+    if isinstance(obj, np.generic):
+        # Before the Python scalars, since np.float64 subclasses float.
+        return {"t": "npscalar", "dtype": obj.dtype.str, "v": obj.item()}
+    if isinstance(obj, (bool, int, float, str)):
+        return {"t": "scalar", "v": obj}
+    if isinstance(obj, shapely.LineString):
+        arrays[path] = shapely.get_coordinates(obj)
+        return {"t": "linestring", "k": path}
+    if isinstance(obj, shapely.Point):
+        arrays[path] = shapely.get_coordinates(obj).flatten()
+        return {"t": "point", "k": path}
+    if isinstance(obj, (shapely.Polygon, shapely.MultiPolygon)):
+        return _encode_polygon(obj, path, arrays)
+    if isinstance(obj, dict):
+        items = {}
+        for key, value in obj.items():
+            if not isinstance(key, str):
+                raise TypeError(f"Cannot encode a dict with key {key!r}.")
+            items[key] = encode_node(value, _join_path(path, key), arrays)
+        return {"t": "dict", "items": items}
+    if isinstance(obj, list) and _is_centerline_list(obj):
+        return encode_centerline_list(obj, path, arrays)
+    if isinstance(obj, list) and _is_multilinestring_list(obj):
+        return _encode_multilinestring_list(obj, path, arrays)
+    if isinstance(obj, list) and _is_packable_array_list(obj):
+        return _encode_array_list(obj, path, arrays)
+    if isinstance(obj, (list, tuple)):
+        items = [
+            encode_node(item, _join_path(path, str(i)), arrays)
+            for i, item in enumerate(obj)
+        ]
+        return {
+            "t": "tuple" if isinstance(obj, tuple) else "list",
+            "items": items,
+        }
+
+    raise TypeError(f"Cannot encode an object of type {type(obj).__name__}.")
+
+
+def _decode_polygon(
+    node: dict, arrays: dict
+) -> shapely.Polygon | shapely.MultiPolygon:
+    """Reconstruct a (Multi)Polygon from its flattened rings.
+
+    The flat vertex array is split back into rings using
+    ``ring_lengths``, and the rings are grouped into parts by
+    ``ring_poly_idx`` and ``ring_is_exterior``.
+
+    Parameters
+    ----------
+    node : dict
+        The encoded polygon node.
+    arrays : dict
+        Mapping of array keys to arrays, as read from the npz file.
+
+    Returns
+    -------
+    shapely.Polygon or shapely.MultiPolygon
+        The reconstructed geometry.
+    """
+    path = node["k"]
+    vertices = arrays[_join_path(path, "vertices")]
+    ring_lengths = arrays[_join_path(path, "ring_lengths")]
+    ring_poly_idx = arrays[_join_path(path, "ring_poly_idx")]
+    ring_is_exterior = arrays[_join_path(path, "ring_is_exterior")]
+
+    splits = np.cumsum(ring_lengths)[:-1]
+    rings = np.split(vertices, splits) if len(ring_lengths) else []
+
+    parts = {}
+    for ring, poly_idx, is_exterior in zip(
+        rings, ring_poly_idx, ring_is_exterior
+    ):
+        part = parts.setdefault(int(poly_idx), {"exterior": None, "holes": []})
+        if bool(is_exterior):
+            part["exterior"] = ring
+        else:
+            part["holes"].append(ring)
+
+    polygons = [
+        shapely.Polygon(parts[idx]["exterior"], parts[idx]["holes"])
+        for idx in sorted(parts)
+    ]
+    if node.get("multi"):
+        return shapely.MultiPolygon(polygons)
+
+    return polygons[0]
+
+
+def _decode_multilinestring_list(node: dict, arrays: dict) -> list:
+    """Reconstruct a list of MultiLineStrings from flat arrays.
+
+    Inverse of :func:`_encode_multilinestring_list`.
+
+    Parameters
+    ----------
+    node : dict
+        The encoded list node.
+    arrays : dict
+        Mapping of array keys to arrays, as read from the npz file.
+
+    Returns
+    -------
+    list
+        The reconstructed MultiLineStrings.
+    """
+    path = node["k"]
+    lines = np.split(
+        arrays[_join_path(path, "vertices")],
+        np.cumsum(arrays[_join_path(path, "line_lengths")])[:-1],
+    )
+    widths, offset = [], 0
+    for count in arrays[_join_path(path, "member_counts")]:
+        members = [shapely.LineString(lines[offset + i]) for i in range(count)]
+        offset += count
+        widths.append(shapely.MultiLineString(members))
+
+    return widths
+
+
+def _decode_array_list(node: dict, arrays: dict) -> list:
+    """Reconstruct a ragged list of arrays from one flat array.
+
+    Inverse of :func:`_encode_array_list`.
+
+    Parameters
+    ----------
+    node : dict
+        The encoded list node.
+    arrays : dict
+        Mapping of array keys to arrays, as read from the npz file.
+
+    Returns
+    -------
+    list
+        The reconstructed arrays.
+    """
+    path = node["k"]
+    lengths = arrays[_join_path(path, "lengths")]
+
+    return np.split(
+        arrays[_join_path(path, "vertices")], np.cumsum(lengths)[:-1]
+    )
+
+
+def decode_node(node: dict, arrays: dict) -> Any:
+    """Reconstruct an object from an encoded node.
+
+    Inverse of :func:`encode_node`.
+
+    TODO: Refactor for legibility.
+
+    Parameters
+    ----------
+    node : dict
+        The node to decode.
+    arrays : dict
+        Mapping of array keys to arrays, as read from the npz file.
+
+    Returns
+    -------
+    Any
+        The reconstructed object.
+
+    Raises
+    ------
+    ValueError
+        If the node carries a type the codec does not know.
+    """
+    kind = node["t"]
+    if kind == "none":
+        return None
+    if kind == "array":
+        return arrays[node["k"]]
+    if kind == "scalar":
+        return node["v"]
+    if kind == "npscalar":
+        return np.dtype(node["dtype"]).type(node["v"])
+    if kind == "linestring":
+        return shapely.LineString(arrays[node["k"]])
+    if kind == "point":
+        return shapely.Point(arrays[node["k"]])
+    if kind == "polygon":
+        return _decode_polygon(node, arrays)
+    if kind == "dict":
+        return {
+            key: decode_node(child, arrays)
+            for key, child in node["items"].items()
+        }
+    if kind == "centerline_list":
+        return decode_centerline_list(node, arrays)
+    if kind == "multilinestring_list":
+        return _decode_multilinestring_list(node, arrays)
+    if kind == "array_list":
+        return _decode_array_list(node, arrays)
+    if kind in ("list", "tuple"):
+        items = [decode_node(child, arrays) for child in node["items"]]
+        return tuple(items) if kind == "tuple" else items
+
+    raise ValueError(f"Unknown node type {kind!r}.")
+
+
+def convert_pickles_to_npz(data: Any, name: str = "") -> tuple[dict, dict]:
+    """Convert data destined for a pickle into npz contents.
+
+    Parameters
+    ----------
+    data : Any
+        The data to convert.
+    name : str, optional
+        Name of the store group.
+
+    Returns
+    -------
+    tuple[dict, dict]
+        The arrays to write, and the metadata describing them.
+    """
+    arrays = {}
+    root = encode_node(data, "", arrays)
+
+    return arrays, {"schema": SCHEMA_VERSION, "root": root}
+
+
+def decode_npz(arrays: dict, meta: dict, name: str = "") -> Any:
+    """Reconstruct data from npz contents.
+
+    Inverse of :func:`convert_pickles_to_npz`.
+
+    Parameters
+    ----------
+    arrays : dict
+        Mapping of array keys to arrays.
+    meta : dict
+        Metadata describing the arrays.
+    name : str, optional
+        Name of the store group. See :func:`convert_pickles_to_npz`.
+
+    Returns
+    -------
+    Any
+        The reconstructed data, matching what the pickle held.
+    """
+    return decode_node(meta["root"], arrays)
 
 
 def _extract_polygon_coords(geometry: shapely.Polygon) -> list[tuple]:
@@ -188,325 +814,25 @@ def _extract_polygon_coords(geometry: shapely.Polygon) -> list[tuple]:
     return rings
 
 
-def _validate_point(
-    point: xr.DataArray | np.ndarray | shapely.Point | None,
-) -> shapely.Point | None:
-    """Coerce a stored DataArray/ndarray back to a shapely Point.
+def get_grid_params_from_partial(p: Callable) -> dict:
+    """Collect the parameters of the grid a partial binds.
+
+    A partial cannot be serialised, so a flowline's map transformation
+    is stored as the parameters needed to rebuild its grid.
+
+    TODO: Convert from glacier_grid instead of partial.
 
     Parameters
     ----------
-    point : xr.DataArray, np.ndarray, shapely.Point, or None
-        The input object to validate.
-
-    Returns
-    -------
-    shapely.Point or None
-        A Point object, or None if the input is None.
-    """
-    if point is None:
-        return None
-    if isinstance(point, (xr.DataArray, np.ndarray)):
-        coords = np.asarray(point).flatten()
-        return shapely.geometry.Point(coords)
-    return point
-
-
-def get_datatree_value(
-    data_tree: xr.DataTree, attribute: str
-) -> xr.DataArray | None:
-    """Get a value from a DataTree node.
-
-    Parameters
-    ----------
-    data_tree : xr.DataTree
-        The DataTree node from which to extract the value.
-    attribute : str
-        The name of the attribute to retrieve.
-
-    Returns
-    -------
-    xr.DataArray or None
-        The value of the specified attribute, or None if the attribute
-        does not exist or is empty.
-    """
-    if hasattr(data_tree, attribute):
-        if isinstance(getattr(data_tree, attribute), xr.DataTree):
-            if getattr(data_tree, attribute).is_empty:
-                return None
-        return getattr(data_tree, attribute).values.copy()
-    return None
-
-
-def get_flowline_from_datatree(data_tree: xr.DataTree):
-    """Reconstruct a Flowline object from a DataTree.
-
-    The concrete subclass is read from the ``_flowline_class`` node attr
-    (defaulting to ``MixedBedFlowline`` for stores written before
-    multi-class support, preserving backward compatibility).
-    """
-    from oggm.core.flowline import (
-        MixedBedFlowline,
-        ParabolicBedFlowline,
-        RectangularBedFlowline,
-        TrapezoidalBedFlowline,
-    )
-
-    cls_name = data_tree.attrs.get("_flowline_class", "MixedBedFlowline")
-
-    # kwargs common to every Flowline subclass constructor
-    base = dict(
-        line=_validate_linestring(get_datatree_value(data_tree, "line")),
-        dx=get_datatree_value(data_tree, "dx"),
-        map_dx=get_datatree_value(data_tree, "map_dx"),
-        surface_h=get_datatree_value(data_tree, "surface_h"),
-        bed_h=get_datatree_value(data_tree, "bed_h"),
-        rgi_id=get_datatree_value(data_tree, "rgi_id"),
-        water_level=get_datatree_value(data_tree, "water_level"),
-    )
-
-    if cls_name == "ParabolicBedFlowline":
-        flowline = ParabolicBedFlowline(
-            bed_shape=get_datatree_value(data_tree, "bed_shape"), **base
-        )
-    elif cls_name == "RectangularBedFlowline":
-        flowline = RectangularBedFlowline(
-            widths=get_datatree_value(data_tree, "widths"), **base
-        )
-    elif cls_name == "TrapezoidalBedFlowline":
-        flowline = TrapezoidalBedFlowline(
-            widths=get_datatree_value(data_tree, "widths"),
-            lambdas=get_datatree_value(data_tree, "lambdas"),
-            **base,
-        )
-    else:  # MixedBedFlowline (default / legacy stores)
-        flowline = MixedBedFlowline(
-            section=get_datatree_value(data_tree, "section"),
-            bed_shape=get_datatree_value(data_tree, "bed_shape"),
-            is_trapezoid=get_datatree_value(data_tree, "is_trapezoid"),
-            lambdas=get_datatree_value(data_tree, "lambdas"),
-            widths_m=get_datatree_value(data_tree, "widths_m"),
-            gdir=get_datatree_value(data_tree, "gdir"),
-            **base,
-        )
-        # Mixed-only cached arrays; restore exactly as stored.
-        for attribute in ["_sqrt_bed", "_w0_m"]:
-            setattr(
-                flowline, attribute, get_datatree_value(data_tree, attribute)
-            )
-
-    setattr(flowline, "order", get_datatree_value(data_tree, "order"))
-
-    # reconstruct Grid partial (None when no grid params were stored)
-    setattr(flowline, "map_trafo", get_map_trafo_from_grid(data_tree))
-    return flowline
-
-
-def get_centerline_from_datatree(data_tree: xr.DataTree):
-    """Reconstruct a Centerline object from a DataTree.
-
-    Note that it is not possible to reconstruct a Centerline with all
-    the same attributes as the original, because some of these cannot be
-    passed to the constructor.
-    """
-    from oggm import Centerline
-
-    centerline = Centerline(
-        line=_validate_linestring(get_datatree_value(data_tree, "line")),
-        dx=np.array(get_datatree_value(data_tree, "dx")),
-        surface_h=get_datatree_value(data_tree, "surface_h"),
-        orig_head=_validate_point(get_datatree_value(data_tree, "orig_head")),
-        rgi_id=get_datatree_value(data_tree, "rgi_id"),
-        map_dx=get_datatree_value(data_tree, "map_dx"),
-    )
-    for attribute in [
-        "order",
-        "_widths",
-        "is_rectangular",
-        "is_trapezoid",
-        "apparent_mb",
-        "flux",
-        "flux_out",
-    ]:
-        val = get_datatree_value(data_tree, attribute)
-        setattr(centerline, attribute, val)
-
-    # Need to rebuild list of MultiLineStrings from flat coord array
-    gw_data = get_datatree_value(data_tree, "geometrical_widths")
-    if gw_data is not None:
-        coords = np.array(gw_data)
-        line_lengths = get_datatree_value(data_tree, "gw_line_lengths")
-        counts = get_datatree_value(data_tree, "gw_width_line_counts")
-        if line_lengths is None:
-            # TODO: legacy (N,2,2) stores from before the ragged fix,
-            # drop this logic once pre-fix zarr caches are rebuilt
-            widths = []
-            for i in range(len(coords)):
-                if np.any(np.isnan(coords[i])):
-                    widths.append(shapely.geometry.MultiLineString())
-                else:
-                    widths.append(
-                        shapely.geometry.MultiLineString(
-                            [shapely.geometry.LineString(coords[i])]
-                        )
-                    )
-        else:
-            line_lengths = np.asarray(line_lengths, dtype=np.int64)
-            counts = np.asarray(counts, dtype=np.int64)
-            splits = np.cumsum(line_lengths)[:-1]
-            lines = np.split(coords, splits) if len(line_lengths) else []
-            widths = []
-            li = 0
-            for cnt in counts:
-                members = [
-                    shapely.geometry.LineString(lines[li + j])
-                    for j in range(cnt)
-                ]
-                li += cnt
-                widths.append(shapely.geometry.MultiLineString(members))
-        centerline.geometrical_widths = widths
-
-    return centerline
-
-
-def get_polygon_from_datatree(
-    data_tree: xr.DataTree,
-) -> shapely.Polygon | shapely.MultiPolygon:
-    """Reconstruct a (Multi)Polygon from a DataTree node.
-
-    Inverse of :func:`convert_polygon_to_dataarray`: splits the flat
-    ``coords`` array into rings using ``ring_lengths`` and groups them
-    into parts via ``ring_poly_idx`` / ``ring_is_exterior``.
-
-    Parameters
-    ----------
-    data_tree : xr.DataTree
-        The DataTree node containing the polygon data.
-
-    Returns
-    -------
-    shapely.Polygon or shapely.MultiPolygon
-        The reconstructed (Multi)Polygon object.
-    """
-    coords = np.asarray(get_datatree_value(data_tree, "vertices"))
-    ring_lengths = np.asarray(get_datatree_value(data_tree, "ring_lengths"))
-    ring_poly_idx = np.asarray(get_datatree_value(data_tree, "ring_poly_idx"))
-    ring_is_exterior = np.asarray(
-        get_datatree_value(data_tree, "ring_is_exterior")
-    )
-
-    # Split flat coords array back into individual rings
-    splits = np.cumsum(ring_lengths)[:-1]
-    rings = np.split(coords, splits) if len(ring_lengths) else []
-
-    # Preserve order
-    parts = {}
-    for ring, poly_idx, is_ext in zip(rings, ring_poly_idx, ring_is_exterior):
-        part = parts.setdefault(int(poly_idx), {"exterior": None, "holes": []})
-        if bool(is_ext):
-            part["exterior"] = ring
-        else:
-            part["holes"].append(ring)
-
-    polygons = [
-        shapely.Polygon(parts[idx]["exterior"], parts[idx]["holes"])
-        for idx in sorted(parts)
-    ]
-    if len(polygons) == 1:
-        return polygons[0]
-
-    return shapely.MultiPolygon(polygons)
-
-
-def get_index_list_from_datatree(data_tree: xr.DataTree) -> list:
-    """Reconstruct polygon indices from a DataTree node.
-
-    Used for converting polygons. Inverse of
-    :func:`convert_index_list_to_dataarrays`.
-
-    Parameters
-    ----------
-    data_tree : xr.DataTree
-        The DataTree node containing the index list data.
-
-    Returns
-    -------
-    list of np.ndarray
-        Polygon indices as ``(n, 2)`` int arrays.
-    """
-
-    coords = np.asarray(
-        get_datatree_value(data_tree, "vertices"), dtype=np.int64
-    )
-    lengths = np.asarray(
-        get_datatree_value(data_tree, "lengths"), dtype=np.int64
-    )
-    if not len(lengths):
-        return []
-    splits = np.cumsum(lengths)[:-1]
-
-    return [a.reshape(-1, 2) for a in np.split(coords, splits)]
-
-
-def get_geometries_from_datatree(data_tree: xr.DataTree) -> dict:
-    """Reconstruct geometries from a DataTree.
-
-    Returns a flat dict matching the original ``geometries`` pickle:
-    polygon children become shapely (Multi)Polygons, the
-    ``catchment_indices`` child becomes a list of index arrays, scalar
-    root variables (e.g. ``polygon_area``) become plain Python scalars,
-    and any other child is recursed into.
-
-    Parameters
-    ----------
-    data_tree : xr.DataTree
-        The DataTree node containing the geometries.
+    p : Callable
+        A partial of ``salem.Grid.ij_to_crs``.
 
     Returns
     -------
     dict
-        A dictionary of geometries, with keys matching the original
-        ``geometries`` pickle.
+        The grid's projection, shape, resolution, origin, and pixel
+        reference.
     """
-    geometries = {}
-
-    # Root-level variables (scalars such as polygon_area).
-    for var in data_tree.data_vars:
-        val = data_tree[var].values.copy()
-        geometries[var] = val.item() if val.ndim == 0 else val
-    for coord in data_tree.coords:
-        geometries[coord] = data_tree.coords[coord].values.copy()
-
-    for name, child in data_tree.children.items():
-        if not isinstance(child, xr.DataTree):
-            geometries[name] = child
-        elif child.is_empty:
-            geometries[name] = None
-        elif child.attrs.get("_geom_kind") == "polygon":
-            geometries[name] = get_polygon_from_datatree(child)
-        elif child.attrs.get("_geom_kind") == "index_list":
-            geometries[name] = get_index_list_from_datatree(child)
-        else:
-            geometries[name] = get_geometries_from_datatree(child)
-
-    return geometries
-
-
-def restore_projection(root: xr.DataTree) -> None:
-    """Restore the pyproj.Proj object from the stored CRS dictionary.
-
-    Parameters
-    ----------
-    root : xr.DataTree
-        The root DataTree node containing the CRS information.
-    """
-    if "pyproj_srs" in root.attrs:
-        if isinstance(root.attrs["pyproj_srs"], dict):
-            crs = pyproj.CRS.from_json_dict(root.attrs["pyproj_srs"])
-            root.attrs["pyproj_srs"] = pyproj.Proj(crs)
-
-
-def get_grid_params_from_partial(p: Callable) -> dict:
-    # TODO: Convert from glacier_grid instead of partial.
     grid = p.func.__self__
     grid_parameters = {
         "pyproj_srs": grid.proj.crs.to_json_dict(),
@@ -517,654 +843,3 @@ def get_grid_params_from_partial(p: Callable) -> dict:
     }
 
     return grid_parameters
-
-
-def get_map_trafo_from_grid(data_tree: xr.DataTree) -> Callable | None:
-    """Get a partial function for the map transformation from a DataTree.
-
-    Flowlines created without a gdir/grid (e.g. the PyGEM sandbox) have
-    no stored grid params, so reconstruct these without map_trafo.
-
-    Parameters
-    ----------
-    data_tree : xr.DataTree
-        The DataTree node containing the grid parameters.
-
-    Returns
-    -------
-    Callable or None
-        A partial function for the map transformation, or None if grid
-        parameters are not available.
-    """
-
-    # TODO: Move to change flowline object instead to take a Grid object instead of a gdir.
-    if "pyproj_srs" not in data_tree.attrs:
-        return None
-    map_trafo = Grid(
-        proj=data_tree.attrs["pyproj_srs"],
-        nxny=(data_tree.attrs["nxny"]),
-        dxdy=(data_tree.attrs["dxdy"]),
-        x0y0=(data_tree.attrs["x0y0"]),
-        pixel_ref=data_tree.attrs["pixel_ref"],
-    )
-    return partial(map_trafo.ij_to_crs, crs=wgs84)
-
-
-def convert_linestring_to_dataarray(
-    line: shapely.LineString, dims: tuple = ("x", "y")
-) -> xr.DataArray:
-    """Convert a shapely LineString to a DataArray of coordinates.
-
-    Parameters
-    ----------
-    line : shapely.LineString
-        The line to convert. Any non-LineString input is returned
-        unchanged.
-    dims : tuple, default ("x", "y")
-        Dimension names for the (point, coord) axes. Pass distinct names
-        when several linestrings of different lengths are stored in the
-        same group, to avoid xarray dimension-size clashes.
-
-    Returns
-    -------
-    xr.DataArray
-        A 2-D DataArray of shape (n_points, 2) with the coordinates of
-        the LineString, or the input unchanged if it is not a LineString.
-    """
-    if not isinstance(line, shapely.LineString):
-        return line
-    else:
-        return xr.DataArray(
-            np.array(shapely.geometry.mapping(line)["coordinates"]),
-            dims=list(dims),
-        )
-
-
-def convert_point_to_dataarray(
-    point: shapely.Point | None,
-) -> xr.DataArray | None:
-    """Convert a shapely Point to a 1-D DataArray of coordinates.
-
-    Parameters
-    ----------
-    point : shapely.Point or None
-        The point to convert. Any non-Point input is returned unchanged.
-
-    Returns
-    -------
-    xr.DataArray or None
-        A 1-D DataArray of shape (2,) with the coordinates of the Point,
-        or the input unchanged if it is not a Point.
-    """
-    if point is None:
-        return None
-    if not isinstance(point, shapely.Point):
-        return point
-    coords = np.array(shapely.get_coordinates(point)).flatten()
-    return xr.DataArray(coords, dims=["xy"])
-
-
-def convert_polygon_to_dataarray(
-    polygon: shapely.Polygon,
-) -> dict | object:
-    """Convert a shapely Polygon/MultiPolygon to DataArrays.
-
-    Interior holes and multiple parts are preserved by flattening every
-    ring into a single ``coords`` array with index arrays describing how
-    to split it back up (see :func:`_extract_polygon_coords`). The
-    result is a dict of ``xr.DataArray``, suitable for
-    storing as a single DataTree node.
-
-    Parameters
-    ----------
-    polygon : shapely.Polygon or shapely.MultiPolygon
-        The geometry to convert. Any other input is returned unchanged.
-
-    Returns
-    -------
-    dict or object
-        A dict with ``coords``, ``ring_lengths``, ``ring_poly_idx`` and
-        ``ring_is_exterior`` DataArrays, or the input unchanged if it is
-        not a (Multi)Polygon.
-    """
-    if not isinstance(polygon, (shapely.Polygon, shapely.MultiPolygon)):
-        return polygon
-
-    rings = _extract_polygon_coords(polygon)
-    coords = (
-        np.concatenate([r[0] for r in rings], axis=0)
-        if rings
-        else np.zeros((0, 2), dtype=np.float64)
-    )
-    ring_lengths = np.array([len(r[0]) for r in rings], dtype=np.int64)
-    ring_poly_idx = np.array([r[1] for r in rings], dtype=np.int64)
-    ring_is_exterior = np.array([r[2] for r in rings], dtype=bool)
-
-    return {
-        "vertices": xr.DataArray(
-            np.asarray(coords, dtype=np.float64), dims=["vertex", "xy"]
-        ),
-        "ring_lengths": xr.DataArray(ring_lengths, dims=["ring"]),
-        "ring_poly_idx": xr.DataArray(ring_poly_idx, dims=["ring"]),
-        "ring_is_exterior": xr.DataArray(ring_is_exterior, dims=["ring"]),
-    }
-
-
-def convert_index_list_to_dataarrays(index_list: list) -> dict | object:
-    """Convert a list of polygon indices DataArrays.
-
-    Used for ``catchment_indices``, with index arrays for each
-    centerline.They are flattened into a single ``coords`` array plus a
-    ``lengths`` array so the list can be split back up when read.
-
-    Parameters
-    ----------
-    index_list : list
-        A list of ``(n_k, 2)`` integer arrays. Any other input is
-        returned unchanged.
-
-    Returns
-    -------
-    dict or object
-        A dict with ``coords`` and ``lengths`` DataArrays, or the
-        unchanged input if it is not a list of arrays.
-    """
-    if not isinstance(index_list, list) or not all(
-        isinstance(a, np.ndarray) for a in index_list
-    ):
-        return index_list
-
-    arrays = [np.asarray(a, dtype=np.int64).reshape(-1, 2) for a in index_list]
-    coords = (
-        np.concatenate(arrays, axis=0)
-        if arrays
-        else np.zeros((0, 2), dtype=np.int64)
-    )
-    lengths = np.array([len(a) for a in arrays], dtype=np.int64)
-
-    return {
-        "vertices": xr.DataArray(coords, dims=["vertex", "xy"]),
-        "lengths": xr.DataArray(lengths, dims=["entry"]),
-    }
-
-
-def get_dict_from_datatree(data_tree: xr.DataTree) -> dict:
-    """Convert a DataTree back into a dictionary.
-
-    This will flatten a datatree such that all coordinates and data
-    variables match what would be expected in the original pickles.
-    """
-    data = {}
-    for coord in data_tree.coords:
-        data[coord] = data_tree.coords[coord].values.copy()
-    for var in data_tree.data_vars:
-        data[var] = data_tree[var].values.copy()
-    for name, child in data_tree.children.items():
-        if isinstance(child, xr.DataTree):
-            if child.is_empty:
-                data[name] = None
-            else:
-                data[name] = get_dict_from_datatree(child)
-        else:
-            data[name] = child
-    return data
-
-
-def get_downstream_line_from_pkl(pickle: dict) -> dict:
-    """Convert ``downstream_line`` pickle into zarr-compatible structure.
-
-    ``downstream_line`` and ``full_line`` generally differ in length, so
-    ``full_line`` is given distinct dim names to avoid clashing on a
-    shared dimension when both live in the same zarr group.
-
-    Parameters
-    ----------
-    pickle : dict
-        Data loaded directly from the ``downstream_line`` pickle.
-
-    Returns
-    -------
-    dict
-        The same items as the input, but with the ``downstream_line``
-        and ``full_line`` keys converted to DataArrays of coordinates if
-        they were originally LineStrings.
-    """
-
-    try:
-        assert isinstance(pickle, dict)
-        downstream_line = pickle["downstream_line"]
-    except AssertionError:
-        raise TypeError(
-            "Input data must be a dictionary."
-            "Ensure you are loading from a pickle"
-        )
-    except KeyError:
-        raise KeyError(
-            "The pickle must contain a 'downstream_line' key."
-            "Check the contents of the pickle."
-        )
-
-    """
-    Work on a shallow copy so the original dict is not mutated.  If we
-    modified the caller's dict in-place the original_data reference in
-    write_store would also be changed, causing the pickle fallback to
-    store a DataArray instead of the original shapely geometry.
-    """
-    pickle = dict(pickle)
-    pickle["downstream_line"] = convert_linestring_to_dataarray(downstream_line)
-    if "full_line" in pickle:
-        # None passes through unchanged but LineStrings get distinct dims
-        pickle["full_line"] = convert_linestring_to_dataarray(
-            pickle["full_line"], dims=("full_line_point", "full_line_coord")
-        )
-
-    return pickle
-
-
-def get_model_flowlines_from_pkl(pickle: list) -> list:
-    """Convert ``model_flowlines`` pickle into zarr-compatible structure.
-
-    Note that ``map_trafo`` is a partial and cannot be directly
-    serialised to zarr; it is stored separately as group attrs.
-    ``gdir`` is a GlacierDirectory and cannot be serialised either;
-    it is omitted (``map_trafo`` is reconstructed from the stored grid
-    params instead).
-
-    Parameters
-    ----------
-    pickle : list
-        Data loaded directly from the ``model_flowlines`` pickle.
-
-    Returns
-    -------
-    list[dict]
-        One dict per flowline with the attributes needed to reconstruct
-        the original :py:class:`oggm.core.flowline.Flowline` (any of the
-        four subclasses). The concrete class is recorded separately as a
-        node attr by :func:`convert_pickles_to_datatree`.
-    """
-    from oggm.core.flowline import (
-        Flowline,
-        MixedBedFlowline,
-        ParabolicBedFlowline,
-        RectangularBedFlowline,
-        TrapezoidalBedFlowline,
-    )
-
-    new_pickle = []
-    if not isinstance(pickle, list) or not pickle:
-        return new_pickle
-    try:
-        assert all(isinstance(fl, Flowline) for fl in pickle)
-        fl_id_to_idx = {id(fl): i for i, fl in enumerate(pickle)}
-        for fl in pickle:
-            # Attributes common to every Flowline subclass.
-            data = {
-                "line": convert_linestring_to_dataarray(
-                    getattr(fl, "line", None)
-                ),
-                "dx": getattr(fl, "dx", None),
-                "map_dx": getattr(fl, "map_dx", None),
-                "surface_h": getattr(fl, "surface_h", None),
-                "bed_h": getattr(fl, "bed_h", None),
-                "rgi_id": getattr(fl, "rgi_id", None),
-                "water_level": getattr(fl, "water_level", None),
-                "order": getattr(fl, "order", None),
-            }
-            # Per-class bed parameters (match each constructor's kwargs).
-            if isinstance(fl, MixedBedFlowline):
-                lambdas = getattr(fl, "lambdas", None)
-                data.update(
-                    {
-                        "section": getattr(fl, "section", None),
-                        "bed_shape": getattr(fl, "bed_shape", None),
-                        "is_trapezoid": getattr(fl, "is_trapezoid", None),
-                        "widths_m": getattr(fl, "widths_m", None),
-                        "lambdas": (
-                            getattr(fl, "_lambdas", None)
-                            if lambdas is None
-                            else lambdas
-                        ),
-                        "_sqrt_bed": getattr(fl, "_sqrt_bed", None),
-                        "_w0_m": getattr(fl, "_w0_m", None),
-                    }
-                )
-            elif isinstance(fl, ParabolicBedFlowline):
-                data["bed_shape"] = getattr(fl, "bed_shape", None)
-            elif isinstance(fl, RectangularBedFlowline):
-                data["widths"] = getattr(fl, "_widths", None)
-            elif isinstance(fl, TrapezoidalBedFlowline):
-                # Trapezoid reconstructs _w0_m from widths and lambdas, so
-                # store the width property (= widths_m / map_dx) and lambdas.
-                data["widths"] = getattr(fl, "widths", None)
-                data["lambdas"] = getattr(fl, "_lambdas", None)
-            # Store the index of the flowline this one flows into (-1 = None).
-            flows_to = getattr(fl, "flows_to", None)
-            data["_flows_to_list_idx"] = np.int64(
-                fl_id_to_idx.get(id(flows_to), -1)
-                if flows_to is not None
-                else -1
-            )
-            # Drop None values so xarray can infer dtypes.
-            data = {k: v for k, v in data.items() if v is not None}
-            new_pickle.append(data)
-    except AssertionError:
-        raise TypeError(
-            "All items in the pickle list must be Flowline instances."
-        )
-
-    return new_pickle
-
-
-def get_inversion_flowlines_from_pkl(pickle: list) -> list[dict]:
-    """Convert ``inversion_flowlines`` (or ``centerlines``) pickle into
-    zarr-compatible structure.
-
-    Parameters
-    ----------
-    pickle : list
-        Data loaded directly from the pickle – a list of
-        :py:class:`oggm.Centerline` objects.
-
-    Returns
-    -------
-    list[dict]
-        One dict per flowline with the attributes needed to reconstruct
-        the original Centerline objects.
-    """
-    from oggm import Centerline
-
-    new_pickle = []
-    if not isinstance(pickle, list) or not pickle:
-        return new_pickle
-    try:
-        assert all(isinstance(fl, Centerline) for fl in pickle)
-        # Build an id-to-index map so we can store the flows_to list index
-        fl_id_to_idx = {id(fl): i for i, fl in enumerate(pickle)}
-        for fl in pickle:
-            data = {
-                "line": convert_linestring_to_dataarray(fl.line),
-                "dx": fl.dx,
-                "surface_h": fl.surface_h,
-                # convert orig_head from shapely Point to DataArray
-                "orig_head": convert_point_to_dataarray(
-                    getattr(fl, "orig_head", None)
-                ),
-                "rgi_id": getattr(fl, "rgi_id", None),
-                "map_dx": getattr(fl, "map_dx", None),
-            }
-            # These cannot be passed via Centerline.__init__
-            for attribute in [
-                "order",
-                "_widths",
-                "is_rectangular",
-                "is_trapezoid",
-                "apparent_mb",
-                "flux",
-                "flux_out",
-            ]:
-                data[attribute] = getattr(fl, attribute, None)
-            # Store index of flowline it flows into (-1 = None)
-            # Reconstruct flows_to connections after deserialisation.
-            flows_to = getattr(fl, "flows_to", None)
-            data["_flows_to_list_idx"] = np.int64(
-                fl_id_to_idx.get(id(flows_to), -1)
-                if flows_to is not None
-                else -1
-            )
-            gw = getattr(fl, "geometrical_widths", None)
-            if gw is not None:
-                # Widths are ragged MultiLineStrings, so store flat coord array
-                # plus counts to preserve ragged shape
-                all_coords = []  # flat coords across all member lines
-                line_lengths = []  # vertices per member LineString
-                width_line_counts = []  # member lines per width
-                for w in gw:
-                    if w is None:
-                        members = []
-                    elif hasattr(w, "geoms"):
-                        members = list(w.geoms)
-                    else:
-                        members = [w]
-                    cnt = 0
-                    for m in members:
-                        if m is None or m.is_empty:
-                            continue
-                        c = np.asarray(m.coords, dtype=np.float64)
-                        all_coords.append(c)
-                        line_lengths.append(len(c))
-                        cnt += 1
-                    width_line_counts.append(cnt)
-                coords = (
-                    np.concatenate(all_coords, axis=0)
-                    if all_coords
-                    else np.zeros((0, 2), dtype=np.float64)
-                )
-                data["geometrical_widths"] = xr.DataArray(
-                    coords, dims=["gw_vertex", "gw_coord"]
-                )
-                data["gw_line_lengths"] = xr.DataArray(
-                    np.asarray(line_lengths, dtype=np.int64), dims=["gw_line"]
-                )
-                data["gw_width_line_counts"] = xr.DataArray(
-                    np.asarray(width_line_counts, dtype=np.int64),
-                    dims=["gw_width"],
-                )
-            # so xarray can infer dtypes for each variable
-            data = {k: v for k, v in data.items() if v is not None}
-            new_pickle.append(data)
-    except AssertionError:
-        raise TypeError(
-            "All items in the pickle list must be Centerline instances."
-        )
-
-    return new_pickle
-
-
-def get_centerlines_from_pkl(pickle: list) -> list[dict]:
-    """Convert a ``centerlines`` pickle to zarr-compatible structure.
-
-    Reuses the same format as ``inversion_flowlines`` since both store
-    lists of :py:class:`oggm.Centerline` objects.
-    """
-    return get_inversion_flowlines_from_pkl(pickle)
-
-
-def get_geometries_from_pkl(pickle: dict) -> dict:
-    """Convert a ``geometries`` pickle to zarr-compatible structure.
-
-    Parameters
-    ----------
-    pickle : dict
-        Data loaded directly from the ``geometries`` pickle.
-
-    Returns
-    -------
-    dict
-        Identical to the pickle, but with zarr-compatible values for
-        ``polygon_hr``, ``polygon_pix``, ``catchment_indices``, and
-        ``downstream_line``. Scalars like ``polygon_area``) are left
-        unchanged.
-    """
-    new_pickle = {}
-    for name, geom in pickle.items():
-        if "polygon_hr" in name or "polygon_pix" in name:
-            new_pickle[name] = convert_polygon_to_dataarray(geom)
-        elif "catchment_indices" in name:
-            new_pickle[name] = convert_index_list_to_dataarrays(geom)
-        elif "downstream_line" in name:
-            new_pickle[name] = convert_linestring_to_dataarray(geom)
-        else:
-            new_pickle[name] = geom
-
-    return new_pickle
-
-
-def convert_pickles_to_datatree(pickle_data: dict) -> xr.DataTree:
-    """Convert a dictionary of pickles into an xarray DataTree."""
-    data_tree = xr.DataTree()
-    for name, pickle in pickle_data.items():
-        try:
-            # These are the pickles that require special handling.
-            if "downstream_line" in name:
-                data = get_downstream_line_from_pkl(pickle)
-                data_tree = add_datacube(
-                    data_tree=data_tree,
-                    datacubes=data,
-                    datacube_name=name,
-                    overwrite=True,
-                )
-                continue
-
-            # Centerline lists: centerlines, inversion_flowlines
-            if "inversion_flowlines" in name or (
-                "centerlines" in name and "inversion" not in name
-            ):
-                dicts = (
-                    get_inversion_flowlines_from_pkl(pickle)
-                    if "inversion_flowlines" in name
-                    else get_centerlines_from_pkl(pickle)
-                )
-                sub_tree = xr.DataTree()
-                for i, d in enumerate(dicts):
-                    sub_tree = add_datacube(
-                        data_tree=sub_tree,
-                        datacubes=d,
-                        datacube_name=str(i),
-                        overwrite=True,
-                    )
-                data_tree[name] = sub_tree
-                continue
-
-            if "model_flowlines" in name:
-                dicts = get_model_flowlines_from_pkl(pickle)
-                sub_tree = xr.DataTree()
-                for i, d in enumerate(dicts):
-                    # map_trafo can't be serialised
-                    from oggm.core.flowline import Flowline
-
-                    fl = (
-                        pickle[i]
-                        if isinstance(pickle, list) and i < len(pickle)
-                        else None
-                    )
-                    map_trafo = (
-                        getattr(fl, "map_trafo", None)
-                        if isinstance(fl, Flowline)
-                        else None
-                    )
-                    sub_tree = add_datacube(
-                        data_tree=sub_tree,
-                        datacubes=d,
-                        datacube_name=str(i),
-                        overwrite=True,
-                    )
-                    if isinstance(fl, Flowline):
-                        sub_tree[str(i)].attrs["_flowline_class"] = type(
-                            fl
-                        ).__name__
-                    if map_trafo is not None:
-                        grid_params = get_grid_params_from_partial(map_trafo)
-                        sub_tree[str(i)].attrs.update(grid_params)
-                data_tree[name] = sub_tree
-                continue
-
-            if "geometries" in name and isinstance(pickle, dict):
-                converted = get_geometries_from_pkl(pickle)
-                root_vars = {}
-                children = {}
-                for k, v in converted.items():
-                    if isinstance(v, dict) and "ring_lengths" in v:
-                        children[k] = ("polygon", v)
-                    elif isinstance(v, dict) and "lengths" in v:
-                        children[k] = ("index_list", v)
-                    elif isinstance(v, xr.DataArray):
-                        root_vars[k] = v
-                    else:
-                        # scalar (e.g. polygon_area) -> 0-d DataArray
-                        root_vars[k] = xr.DataArray(v)
-                node = xr.DataTree(
-                    dataset=xr.Dataset(root_vars) if root_vars else None
-                )
-                for k, (kind, arrays) in children.items():
-                    child = xr.DataTree(dataset=xr.Dataset(arrays))
-                    child.attrs["_geom_kind"] = kind
-                    node[k] = child
-                data_tree[name] = node
-                continue
-
-            # Fallback for implicitly supported pickles
-            if isinstance(pickle, list) and all(
-                isinstance(item, dict) for item in pickle
-            ):
-                # List of dicts (e.g. inversion_input/output with multiple
-                # flowlines): store each dict as a numbered child group.
-                sub_tree = xr.DataTree()
-                for i, item in enumerate(pickle):
-                    sub_tree = add_datacube(
-                        data_tree=sub_tree,
-                        datacubes=item,
-                        datacube_name=str(i),
-                        overwrite=True,
-                    )
-                data_tree[name] = sub_tree
-                continue
-
-            if isinstance(pickle, list):
-                data = pickle[0]
-            elif isinstance(pickle, dict):
-                data = pickle
-            else:
-                raise NotImplementedError
-
-            if isinstance(data, dict):
-                data_tree = add_datacube(
-                    data_tree=data_tree,
-                    datacubes=data,
-                    datacube_name=name,
-                    overwrite=True,
-                )
-            # if "model_flowlines" in name:
-            #     data_tree.model_flowlines.attrs = data_tree.attrs
-        except NotImplementedError as e:
-            print(f"Pickle '{name}' is unsupported and was skipped: {e}")
-
-    return data_tree
-
-
-def add_datacube(
-    data_tree: xr.DataTree,
-    datacubes: dict,
-    datacube_name: str,
-    overwrite: bool = False,
-) -> xr.DataTree:
-    """Add a new dataset as a child group of the DataTree at the root.
-
-    .. note:: The arguments should match those in ``dtcg.GeoZarrHandler.
-
-    Parameters
-    ----------
-    datacubes : dict
-        The dataset to be added.
-    datacube_name : str
-        Layer name to be used for this node of the tree.
-    overwrite : bool
-        If True, allow a layer of the same name to be overwritten.
-
-    Returns
-    -------
-    xr.DataTree
-        The updated DataTree with the new datasets.
-    """
-
-    if datacube_name in data_tree.children and not overwrite:
-        raise ValueError(f"Group '{datacube_name}' already exists.")
-
-    if not isinstance(datacubes, dict):
-        raise ValueError(f"Datacubes need to be provided within a dictionary.")
-
-    data_tree[datacube_name] = xr.DataTree.from_dict(
-        name=datacube_name, data=datacubes
-    )
-
-    return data_tree

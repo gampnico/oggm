@@ -1,29 +1,25 @@
 import os
-import pickle
+import datetime
+import warnings
 from functools import partial
 
 import pytest
 import pyproj
+import shapely
 import shapely.geometry as shpg
 import numpy as np
-import xarray as xr
-from pathlib import Path
 from numpy.testing import assert_allclose
-import matplotlib.pyplot as plt
 from oggm import Centerline
+from oggm.core.flowline import Flowline
 
 salem = pytest.importorskip("salem")
-gpd = pytest.importorskip("geopandas")
 
 # Locals
 import oggm.cfg as cfg
-from oggm.tests.funcs import get_test_dir
-import oggm.utils.geozarr as oggmzarr
+import oggm.utils.geozarr as geozarr
 
 # Globals
 pytestmark = pytest.mark.test_env("workflow")
-_TEST_DIR = os.path.join(get_test_dir(), "tmp_workflow")
-CLI_LOGF = os.path.join(_TEST_DIR, "clilog.pkl")
 
 
 def _make_centerline(n=5):
@@ -113,687 +109,422 @@ def _make_trapezoidal_flowline(n=5):
     from oggm.core.flowline import TrapezoidalBedFlowline
 
     return TrapezoidalBedFlowline(
-        widths=np.full(n, 5.0), lambdas=np.full(n, 1.0),
-        **_flowline_base_kwargs(n)
+        widths=np.full(n, 5.0),
+        lambdas=np.full(n, 1.0),
+        **_flowline_base_kwargs(n),
     )
 
 
-class TestZarrUtilities:
-    """Tests for any Zarr operations called via workflow or _workflow."""
+class TestNpzCodec:
+    """Round trips through the codec behind the npz data store."""
 
-    # File operations
-
-    def test_get_pickle_paths_returns_only_pkl(self, tmp_path):
-        for name in ("data.pkl", "other.pkl", "README.txt", "noextension"):
-            (tmp_path / name).touch()
-
-        class _MockGDir:
-            dir = str(tmp_path)
-
-        paths = oggmzarr.get_pickle_paths(_MockGDir().dir)
-        assert all(isinstance(p, Path) for p in paths)
-        assert all(str(p).endswith(".pkl") for p in paths)
-        assert len(paths) == 2
-
-    def test_get_pickle_paths_empty_dir(self, tmp_path):
-        class _MockGDir:
-            dir = str(tmp_path)
-
-        assert not oggmzarr.get_pickle_paths(_MockGDir().dir)
-
-    def test_get_pickle_data_reads_dict_pickle(self, tmp_path):
-        payload = {"array": np.array([1.0, 2.0]), "val": 42}
-        with open(tmp_path / "mydata.pkl", "wb") as f:
-            pickle.dump(payload, f)
-
-        class _MockGDir:
-            dir = str(tmp_path)
-
-            def read_pickle(self, stem):
-                with open(os.path.join(self.dir, stem + ".pkl"), "rb") as fh:
-                    return pickle.load(fh)
-
-        result = oggmzarr.get_pickle_data([Path("mydata.pkl")], _MockGDir())
-        assert "mydata" in result
-        assert_allclose(result["mydata"]["array"], payload["array"])
-        assert result["mydata"]["val"] == 42
-
-    def test_get_pickle_data_type_only(self, tmp_path):
-        payload = {"array": np.array([1.0, 2.0]), "val": 42}
-        with open(tmp_path / "mydata.pkl", "wb") as f:
-            pickle.dump(payload, f)
-
-        class _MockGDir:
-            dir = str(tmp_path)
-
-            def read_pickle(self, stem):
-                with open(os.path.join(self.dir, stem + ".pkl"), "rb") as fh:
-                    return pickle.load(fh)
-
-        result = oggmzarr.get_pickle_data(
-            [Path("mydata.pkl")], _MockGDir(), type_only=True
-        )
-        assert result["mydata"]["array"] is np.ndarray
-        assert result["mydata"]["val"] is int
-
-    def test_get_pickle_data_reads_list_of_dicts(self, tmp_path):
-        payload = [{"a": 1, "b": np.array([3.0])}, {"c": 2}]
-        with open(tmp_path / "listdata.pkl", "wb") as f:
-            pickle.dump(payload, f)
-
-        class _MockGDir:
-            dir = str(tmp_path)
-
-            def read_pickle(self, stem):
-                with open(os.path.join(self.dir, stem + ".pkl"), "rb") as fh:
-                    return pickle.load(fh)
-
-        result = oggmzarr.get_pickle_data([Path("listdata.pkl")], _MockGDir())
-        assert "listdata" in result
-        # Each dict in the list is processed through get_tranche
-        assert isinstance(result["listdata"], list)
-        assert result["listdata"][0]["a"] == 1
-
-    def test_get_tranche_returns_values(self):
-        assert oggmzarr.get_tranche({}) == {}
-        data = {"a": 1, "b": "hello", "c": np.array([1, 2, 3])}
-        result = oggmzarr.get_tranche(data, type_only=False)
-        assert result["a"] == 1
-        assert result["b"] == "hello"
-        assert_allclose(result["c"], data["c"])
-
-    def test_get_tranche_returns_types(self):
-        data = {"a": 1, "b": "hello", "c": np.array([1, 2, 3])}
-        result = oggmzarr.get_tranche(data, type_only=True)
-        assert result["a"] is int
-        assert result["b"] is str
-        assert result["c"] is np.ndarray
-
-    def test_filter_arrays_from_dict(self):
-        assert oggmzarr.filter_arrays_from_dict({"x": 1, "y": "z"}) == {}
+    def test_generic_dict_roundtrip(self):
+        """A dict of arrays and scalars survives an encode/decode cycle."""
         data = {
-            "array": np.array([1, 2, 3]),
-            "scalar": 42,
-            "string": "hello",
-            "lst": [1, 2],
+            "flux": np.arange(3, dtype=np.float64),
+            "dx": 1.5,
+            "rgi_id": "RGI60-11.00897",
+            "missing": None,
         }
-        result = oggmzarr.filter_arrays_from_dict(data)
-        assert set(result.keys()) == {"array"}
-        assert_allclose(result["array"], data["array"])
 
-    def test_filter_lists_from_dict(self):
-        assert (
-            oggmzarr.filter_lists_from_dict({"x": 1, "y": np.array([1])}) == {}
-        )
+        arrays, meta = geozarr.convert_pickles_to_npz(data, "inversion_input")
+        back = geozarr.decode_npz(arrays, meta, "inversion_input")
+
+        assert set(back) == set(data)
+        assert_allclose(back["flux"], data["flux"])
+        assert back["dx"] == 1.5
+        assert back["rgi_id"] == "RGI60-11.00897"
+        assert back["missing"] is None
+
+    def test_scalar_types_are_preserved(self):
+        """Python and numpy scalars come back as the type they went in as."""
         data = {
-            "arr": np.array([1, 2, 3]),
-            "scalar": 42,
-            "lst": [1, 2],
-            "tup": (3, 4),
+            "py_int": 3,
+            "py_float": 0.1,
+            "py_bool": True,
+            "np_float32": np.float32(0.1),
+            "np_int64": np.int64(7),
+            "np_bool": np.bool_(False),
         }
-        result = oggmzarr.filter_lists_from_dict(data)
-        assert set(result.keys()) == {"lst"}
-        assert result["lst"] == [1, 2]
 
-    # Downstream line
+        arrays, meta = geozarr.convert_pickles_to_npz(data)
+        back = geozarr.decode_npz(arrays, meta)
 
-    def test_get_downstream_line_from_pkl_convert_linestring(self):
-        line = shpg.LineString([(0, 0), (1, 1), (2, 0)])
-        data = {"downstream_line": line, "extra": 99}
-        result = oggmzarr.get_downstream_line_from_pkl(data)
-        assert isinstance(result["downstream_line"], xr.DataArray)
-        assert result["extra"] == 99
-        expected = np.array(shpg.mapping(line)["coordinates"])
-        assert_allclose(result["downstream_line"].values, expected)
+        for key, expected in data.items():
+            assert type(back[key]) is type(expected), key
+            assert back[key] == expected, key
 
-    def test_get_downstream_line_from_pkl_skip_non_linestring(self):
-        array = np.array([1.0, 2.0, 3.0])
-        data = {"downstream_line": array}
-        result = oggmzarr.get_downstream_line_from_pkl(data)
-        assert_allclose(result["downstream_line"], array)
-
-    def test_get_downstream_line_from_pkl_errors(self):
-        with pytest.raises(TypeError):
-            oggmzarr.get_downstream_line_from_pkl("not a dict")
-        with pytest.raises(KeyError):
-            oggmzarr.get_downstream_line_from_pkl({"other_key": 42})
-
-    # Inversion flowlines
-
-    def test_get_inversion_flowlines_extracts_expected_keys(self):
-        cl = _make_centerline()
-        result = oggmzarr.get_inversion_flowlines_from_pkl([cl])
-        assert len(result) == 1
-        data = result[0]
-        for key in (
-            "line",
-            "dx",
-            "surface_h",
-            "orig_head",
-            "rgi_id",
-            "map_dx",
-            "order",
-            "_widths",
-            "is_rectangular",
-            "is_trapezoid",
-            "apparent_mb",
-            "flux",
-            "flux_out",
-        ):
-            assert key in data, f"Expected key '{key}' missing from result"
-
-    def test_get_inversion_flowlines_correct_values(self):
-        assert oggmzarr.get_inversion_flowlines_from_pkl([]) == []
-        cl = _make_centerline(n=7)
-        result = oggmzarr.get_inversion_flowlines_from_pkl([cl])
-        data = result[0]
-        assert_allclose(data["surface_h"], cl.surface_h)
-        assert data["rgi_id"] == "RGI60-11.00897"
-        assert data["dx"] == 1.0
-        assert data["map_dx"] == 100.0
-        assert data["order"] == 1
-
-    def test_get_inversion_flowlines_raises_on_non_centerline(self):
-        with pytest.raises(TypeError):
-            oggmzarr.get_inversion_flowlines_from_pkl(["not a centerline"])
-
-    # Datacube operations
-
-    def test_add_datacube_adds_group(self):
-        dt = xr.DataTree()
-        datacubes = {"var": xr.DataArray([1.0, 2.0])}
-        result = oggmzarr.add_datacube(dt, datacubes, "group_01")
-        assert "group_01" in result.children
-
-        dt = xr.DataTree()
-        datacubes = {"var": xr.DataArray([1.0, 2.0])}
-        dt = oggmzarr.add_datacube(dt, datacubes, "group_01")
-        dt = oggmzarr.add_datacube(dt, datacubes, "group_01", overwrite=True)
-        assert "group_01" in dt.children
-
-        dt = oggmzarr.add_datacube(dt, {"b": xr.DataArray([2.0])}, "group_02")
-        assert "group_01" in dt.children
-        assert "group_02" in dt.children
-
-    def test_add_datacube_raises_on_non_dict_datacubes(self):
-        dt = xr.DataTree()
-        with pytest.raises(ValueError, match="dictionary"):
-            oggmzarr.add_datacube(dt, [1, 2, 3], "group_01")
-
-        dt = xr.DataTree()
-        datacubes = {"var": xr.DataArray([1.0, 2.0])}
-        dt = oggmzarr.add_datacube(dt, datacubes, "group_01")
-        with pytest.raises(ValueError, match="already exists"):
-            oggmzarr.add_datacube(dt, datacubes, "group_01", overwrite=False)
-
-    # Conversion
-
-    def test_convert_pickles_to_datatree_downstream_line(self):
-        line = shpg.LineString([(0, 0), (1, 1), (2, 0)])
-        pickle_data = {"downstream_line": {"downstream_line": line}}
-        result = oggmzarr.convert_pickles_to_datatree(pickle_data)
-        assert isinstance(result, xr.DataTree)
-        assert "downstream_line" in result.children
-
-    def test_convert_pickles_to_datatree_inversion_flowlines(self):
-        cl = _make_centerline()
-        pickle_data = {"inversion_flowlines": [cl]}
-        result = oggmzarr.convert_pickles_to_datatree(pickle_data)
-        assert isinstance(result, xr.DataTree)
-        assert "inversion_flowlines" in result.children
-
-    def test_convert_pickles_to_datatree_generic(self):
-        pickle_data = {"mydata": {"key": xr.DataArray([1.0, 2.0, 3.0])}}
-        result = oggmzarr.convert_pickles_to_datatree(pickle_data)
-        assert isinstance(result, xr.DataTree)
-        assert "mydata" in result.children
-
-        pickle_data = {"unsupported": 42}
-        result = oggmzarr.convert_pickles_to_datatree(pickle_data)
-        assert isinstance(result, xr.DataTree)
-        assert "unsupported" not in result.children
-
-        result = oggmzarr.convert_pickles_to_datatree({})
-        assert isinstance(result, xr.DataTree)
-        assert len(result.children) == 0
-
-    def test_convert_linestring_to_dataarray(self):
-        line = shpg.LineString([(0, 0), (1, 1), (2, 0)])
-        expected = np.array(shpg.mapping(line)["coordinates"])
-        result = oggmzarr.convert_linestring_to_dataarray(line)
-        assert isinstance(result, xr.DataArray)
-        assert_allclose(result.values, expected)
-        assert set(result.dims) == {"x", "y"}
-
-    def test_get_datatree_value(self):
-        ds = xr.Dataset({"surface_h": xr.DataArray([1.0, 2.0, 3.0])})
-        dt = xr.DataTree(dataset=ds)
-        result = oggmzarr.get_datatree_value(dt, "surface_h")
-        assert_allclose(result, [1.0, 2.0, 3.0])
-
-        # returns None for missing attribute, empty child
-        dt = xr.DataTree()
-        result = oggmzarr.get_datatree_value(dt, "nonexistent")
-        assert result is None
-        dt = xr.DataTree()
-        dt["child"] = xr.DataTree()
-        result = oggmzarr.get_datatree_value(dt, "child")
-        assert result is None
-
-    # get_dict_from_datatree
-
-    def test_get_dict_from_datatree(self):
-
-        # empties
-        dt = xr.DataTree()
-        result = oggmzarr.get_dict_from_datatree(dt)
-        assert result == {}
-        dt = xr.DataTree()
-        dt["child"] = xr.DataTree()
-        result = oggmzarr.get_dict_from_datatree(dt)
-        assert "child" in result
-        assert result["child"] is None
-
-        array = xr.DataArray([1.0, 2.0, 3.0], dims=["x"])
-        dt = xr.DataTree(dataset=xr.Dataset({"flux": array}))
-        result = oggmzarr.get_dict_from_datatree(dt)
-        assert "flux" in result
-        assert_allclose(result["flux"], [1.0, 2.0, 3.0])
-
-        array = xr.DataArray([10.0, 20.0], dims=["x"], coords={"x": [0, 1]})
-        dt = xr.DataTree(dataset=xr.Dataset({"flux": array}))
-        result = oggmzarr.get_dict_from_datatree(dt)
-        assert "x" in result
-        assert_allclose(result["x"], [0, 1])
-
-    def test_restore_projection_converts_dict_to_proj(self):
-        crs = pyproj.CRS.from_epsg(32632)
-        dt = xr.DataTree()
-        dt.attrs["pyproj_srs"] = crs.to_json_dict()
-        assert isinstance(dt.attrs["pyproj_srs"], dict)
-        oggmzarr.restore_projection(dt)
-        assert isinstance(dt.attrs["pyproj_srs"], pyproj.Proj)
-
-        dt = xr.DataTree()
-        dt.attrs["other"] = "value"
-        oggmzarr.restore_projection(dt)
-        assert "pyproj_srs" not in dt.attrs
-
-        proj = pyproj.Proj("epsg:32632")
-        dt = xr.DataTree()
-        dt.attrs["pyproj_srs"] = proj
-        oggmzarr.restore_projection(dt)
-        assert dt.attrs["pyproj_srs"] == proj
-
-    def test_get_grid_params_from_partial(self):
-        proj = pyproj.Proj("epsg:32632")
-        grid = salem.Grid(
-            proj=proj,
-            nxny=(10.0, 8.0),
-            dxdy=(200.0, 100.0),
-            x0y0=(500.0, 300.0),
-            pixel_ref="center",
-        )
-        p = partial(grid.ij_to_crs, crs=salem.wgs84)
-        result = oggmzarr.get_grid_params_from_partial(p)
-        for key in ("pyproj_srs", "nxny", "dxdy", "x0y0", "pixel_ref"):
-            assert key in result, f"Expected key '{key}' missing"
-
-        assert result["nxny"] == (10.0, 8.0)
-        assert result["dxdy"] == (200.0, 100.0)
-        assert result["x0y0"] == (500.0, 300.0)
-        assert result["pixel_ref"] == "center"
-        assert isinstance(result["pyproj_srs"], dict)
-
-    def test_get_map_trafo_from_grid(self):
-        # Test with data tree
-        proj = pyproj.Proj("epsg:32632")
-        dt = xr.DataTree()
-        dt.attrs["pyproj_srs"] = proj
-        dt.attrs["nxny"] = (10.0, 8.0)
-        dt.attrs["dxdy"] = (200.0, 100.0)
-        dt.attrs["x0y0"] = (500.0, 300.0)
-        dt.attrs["pixel_ref"] = "center"
-        result = oggmzarr.get_map_trafo_from_grid(dt)
-        assert callable(result)
-        result = oggmzarr.get_grid_params_from_partial(result)
-
-        assert result["nxny"] == (10.0, 8.0)
-        assert result["dxdy"] == (200.0, 100.0)
-        assert result["x0y0"] == (500.0, 300.0)
-        assert result["pixel_ref"] == "center"
-        assert isinstance(result["pyproj_srs"], dict)
-
-        grid = salem.Grid(
-            proj=proj,
-            nxny=(10.0, 8.0),
-            dxdy=(200.0, 100.0),
-            x0y0=(500.0, 300.0),
-            pixel_ref="center",
-        )
-        # reconstruction
-        p = partial(grid.ij_to_crs, crs=salem.wgs84)
-        params = oggmzarr.get_grid_params_from_partial(p)
-
-        dt = xr.DataTree()
-        dt.attrs["pyproj_srs"] = proj
-        dt.attrs["nxny"] = params["nxny"]
-        dt.attrs["dxdy"] = params["dxdy"]
-        dt.attrs["x0y0"] = params["x0y0"]
-        dt.attrs["pixel_ref"] = params["pixel_ref"]
-        result = oggmzarr.get_map_trafo_from_grid(dt)
-        assert callable(result)
-
-    def test_get_model_flowlines(self):
-        result = oggmzarr.get_model_flowlines_from_pkl([])
-        assert not result and isinstance(result, list)
-
-        fl = _make_mixed_bed_flowline()
-        result = oggmzarr.get_model_flowlines_from_pkl([fl])
-        assert len(result) == 1
-        data = result[0]
-        for key in (
-            "line",
-            "dx",
-            "map_dx",
-            "surface_h",
-            "bed_h",
-            "section",
-            "bed_shape",
-            "is_trapezoid",
-            "lambdas",
-            "rgi_id",
-        ):
-            assert key in data, f"Expected key '{key}' missing"
-        assert isinstance(result[0]["line"], xr.DataArray)
-
-        fl = _make_mixed_bed_flowline(n=7)
-        result = oggmzarr.get_model_flowlines_from_pkl([fl])
-        data = result[0]
-        assert_allclose(data["surface_h"], fl.surface_h)
-        assert data["rgi_id"] == "RGI60-11.00897"
-        assert data["dx"] == 1.0
-        assert data["map_dx"] == 100.0
-
-        cl = _make_centerline()
-        with pytest.raises(TypeError):
-            oggmzarr.get_model_flowlines_from_pkl([cl])
-
-    def test_get_pickle_data(self, tmp_path):
-        payload = 42
-        with open(tmp_path / "scalar.pkl", "wb") as f:
-            pickle.dump(payload, f)
-
-        class _MockGDir:
-            dir = str(tmp_path)
-
-            def read_pickle(self, stem):
-                with open(os.path.join(self.dir, stem + ".pkl"), "rb") as fh:
-                    return pickle.load(fh)
-
-        result = oggmzarr.get_pickle_data([Path("scalar.pkl")], _MockGDir())
-        assert "scalar" not in result
-
-    """Round-trip ``geometries`` (polygons with holes, MultiPolygons,
-    catchment_indices) through the zarr conversion helpers."""
-
-    @pytest.fixture(autouse=True)
-    def _holed_polygon(self):
-        """A Polygon with a single interior hole (nunatak)."""
-        exterior = [(0, 0), (0, 10), (10, 10), (10, 0), (0, 0)]
-        hole = [(1, 1), (1, 3), (3, 3), (3, 1), (1, 1)]
-        return shpg.Polygon(exterior, [hole])
-
-    @pytest.fixture(autouse=True)
-    def _multipolygon_two_holes(self):
-        """A MultiPolygon whose first part has more than one hole."""
-        exterior = [(20, 20), (20, 30), (30, 30), (30, 20), (20, 20)]
-        hole_a = [(21, 21), (21, 23), (23, 23), (23, 21), (21, 21)]
-        hole_b = [(25, 25), (25, 27), (27, 27), (27, 25), (25, 25)]
-        part_a = shpg.Polygon(exterior, [hole_a, hole_b])
-        part_b = shpg.Polygon(
-            [(40, 40), (40, 45), (45, 45), (45, 40), (40, 40)]
-        )
-        return shpg.MultiPolygon([part_a, part_b])
-
-    def test_geometries_roundtrip_in_memory(
-        self, _holed_polygon, _multipolygon_two_holes
-    ):
-        poly_hr = _holed_polygon
-        poly_pix = _multipolygon_two_holes
-        cis = [
-            np.array([[1, 2], [3, 4], [5, 6]]),
-            np.zeros((0, 2), dtype=np.int64),  # empty catchment
-            np.array([[7, 8]]),
+    def test_nested_lists_and_tuples_roundtrip(self):
+        """Nested containers keep their structure and their type."""
+        data = [
+            {"width": np.ones(2), "nested": {"depth": 2}},
+            {"width": np.zeros(3), "shape": (4, 5)},
         ]
-        geom = {
-            "polygon_hr": poly_hr,
-            "polygon_pix": poly_pix,
-            "polygon_area": 123.45,
-            "catchment_indices": cis,
+
+        arrays, meta = geozarr.convert_pickles_to_npz(data, "inversion_output")
+        back = geozarr.decode_npz(arrays, meta, "inversion_output")
+
+        assert isinstance(back, list) and len(back) == 2
+        assert_allclose(back[0]["width"], np.ones(2))
+        assert back[0]["nested"] == {"depth": 2}
+        assert back[1]["shape"] == (4, 5)
+
+    def test_linestring_and_point_roundtrip(self):
+        """Shapely lines and points come back as shapely objects."""
+        data = {
+            "downstream_line": shpg.LineString([(0, 0), (1, 1), (2, 4)]),
+            "orig_head": shpg.Point(3, 4),
         }
 
-        data_tree = oggmzarr.convert_pickles_to_datatree({"geometries": geom})
-        assert "geometries" in data_tree.children
-        node = data_tree["geometries"]
-        # polygons + catchment_indices are child groups, area is a root var
-        assert set(node.children) == {
-            "polygon_hr",
-            "polygon_pix",
-            "catchment_indices",
-        }
-        assert "polygon_area" in node.data_vars
+        arrays, meta = geozarr.convert_pickles_to_npz(data, "downstream_line")
+        back = geozarr.decode_npz(arrays, meta, "downstream_line")
 
-        result = oggmzarr.get_geometries_from_datatree(node)
+        assert back["downstream_line"].equals(data["downstream_line"])
+        assert back["orig_head"].equals(data["orig_head"])
 
-        # exterior + interior coordinates preserved
-        assert result["polygon_hr"].equals(poly_hr)
-        assert len(list(result["polygon_hr"].interiors)) == 1
-        assert result["polygon_pix"].equals(poly_pix)
-        assert result["polygon_pix"].geom_type == "MultiPolygon"
+    def test_polygon_with_holes_roundtrip(self):
+        """Interior holes and multipart polygons survive the round trip."""
+        outer = [(0, 0), (0, 10), (10, 10), (10, 0)]
+        hole = [(2, 2), (2, 4), (4, 4), (4, 2)]
+        poly = shpg.Polygon(outer, [hole])
+        multi = shpg.MultiPolygon(
+            [
+                shpg.Polygon(outer, [hole]),
+                shpg.Polygon([(20, 20), (20, 25), (25, 25), (25, 20)]),
+            ]
+        )
+        data = {"polygon_hr": poly, "polygon_pix": multi}
 
-        # the holed MultiPolygon part keeps both holes
-        assert len(list(result["polygon_pix"].geoms[0].interiors)) == 2
-        assert isinstance(result["polygon_area"], float)
-        assert result["polygon_area"] == 123.45
-        for got, exp in zip(result["catchment_indices"], cis):
-            assert_allclose(got, exp)
-            assert got.shape == exp.reshape(-1, 2).shape
+        arrays, meta = geozarr.convert_pickles_to_npz(data, "geometries")
+        back = geozarr.decode_npz(arrays, meta, "geometries")
 
-    def test_geometries_write_read_store_on_disk(
-        self, tmp_path, hef_gdir, _holed_polygon, _multipolygon_two_holes
-    ):
-        """write_store must store polygon interiors+exteriors to a real
-        zarr file on disk, and read_store must reconstruct them."""
+        assert back["polygon_hr"].equals(poly)
+        assert len(back["polygon_hr"].interiors) == 1
+        assert back["polygon_pix"].equals(multi)
+        assert len(back["polygon_pix"].geoms) == 2
+
+    def test_list_of_arrays_is_packed(self):
+        """A ragged list of arrays round trips without one entry per item."""
+        indices = [
+            np.arange(2 * (i + 1), dtype=np.int64).reshape(-1, 2)
+            for i in range(50)
+        ]
+        data = {"catchment_indices": indices}
+
+        arrays, meta = geozarr.convert_pickles_to_npz(data, "geometries")
+        back = geozarr.decode_npz(arrays, meta, "geometries")
+
+        assert len(arrays) <= 4, "ragged lists must be packed into few entries"
+        assert len(back["catchment_indices"]) == 50
+        for got, expected in zip(back["catchment_indices"], indices):
+            assert got.dtype == expected.dtype
+            assert_allclose(got, expected)
+
+    def test_multilinestring_list_roundtrip(self):
+        """Ragged geometrical widths, including empty ones, round trip."""
+        widths = [
+            shpg.MultiLineString([[(0, 0), (0, 1)]]),
+            shpg.MultiLineString([[(1, 0), (1, 2)], [(1, 3), (1, 4), (1, 5)]]),
+            shpg.MultiLineString(),
+        ]
+        data = {"geometrical_widths": widths}
+
+        arrays, meta = geozarr.convert_pickles_to_npz(data, "centerlines")
+        back = geozarr.decode_npz(arrays, meta, "centerlines")
+
+        got = back["geometrical_widths"]
+        assert len(got) == 3
+        for got_w, expected in zip(got, widths):
+            assert got_w.equals(expected)
+        assert got[2].is_empty
+
+    def test_centerline_list_roundtrip(self):
+        """Centerlines keep their attributes and their flow connections."""
+        tributary, trunk = _make_centerline(), _make_centerline()
+        tributary.geometrical_widths = [
+            shpg.MultiLineString([[(0, 0), (0, 1)]])
+        ] * tributary.nx
+        tributary.set_flows_to(trunk)
+
+        arrays, meta = geozarr.convert_pickles_to_npz(
+            [tributary, trunk], "inversion_flowlines"
+        )
+        back = geozarr.decode_npz(arrays, meta, "inversion_flowlines")
+
+        assert len(back) == 2
+        assert all(isinstance(cl, Centerline) for cl in back)
+        assert back[0].flows_to is back[1]
+        assert back[1].flows_to is None
+        assert back[0].rgi_id == "RGI60-11.00897"
+        assert back[0].order == 1
+        assert_allclose(back[0].surface_h, tributary.surface_h)
+        assert_allclose(back[0].widths, tributary.widths)
+        assert back[0].orig_head.equals(tributary.orig_head)
+        assert back[0].line.equals(tributary.line)
+        assert len(back[0].geometrical_widths) == tributary.nx
+
+    @pytest.mark.parametrize(
+        "factory,cls_name",
+        [
+            (_make_mixed_bed_flowline, "MixedBedFlowline"),
+            (_make_parabolic_flowline, "ParabolicBedFlowline"),
+            (_make_rectangular_flowline, "RectangularBedFlowline"),
+            (_make_trapezoidal_flowline, "TrapezoidalBedFlowline"),
+        ],
+    )
+    def test_flowline_subclass_roundtrip(self, factory, cls_name):
+        """Every Flowline subclass comes back as itself, geometry intact."""
+        flowline = factory()
+
+        arrays, meta = geozarr.convert_pickles_to_npz(
+            [flowline], "model_flowlines"
+        )
+        back = geozarr.decode_npz(arrays, meta, "model_flowlines")
+
+        assert len(back) == 1
+        got = back[0]
+        assert type(got).__name__ == cls_name
+        assert_allclose(got.surface_h, flowline.surface_h)
+        assert_allclose(got.bed_h, flowline.bed_h)
+        assert_allclose(got.widths_m, flowline.widths_m)
+        assert_allclose(got.section, flowline.section)
+        assert_allclose(got.area_m2, flowline.area_m2)
+        assert_allclose(got.volume_m3, flowline.volume_m3)
+        assert got.map_trafo is None
+
+    def test_flowline_map_trafo_roundtrip(self):
+        """A flowline's map transformation survives as its grid params."""
+        grid = salem.Grid(
+            proj=pyproj.Proj("epsg:32632"),
+            nxny=(10, 8),
+            dxdy=(200.0, -100.0),
+            x0y0=(500.0, 300.0),
+            pixel_ref="center",
+        )
+        flowline = _make_parabolic_flowline()
+        flowline.map_trafo = partial(grid.ij_to_crs, crs=salem.wgs84)
+
+        arrays, meta = geozarr.convert_pickles_to_npz(
+            [flowline], "model_flowlines"
+        )
+        back = geozarr.decode_npz(arrays, meta, "model_flowlines")[0]
+
+        assert callable(back.map_trafo)
+        assert_allclose(
+            back.map_trafo(np.array([1.0, 2.0]), np.array([3.0, 4.0])),
+            flowline.map_trafo(np.array([1.0, 2.0]), np.array([3.0, 4.0])),
+        )
+
+
+class TestNpzStore:
+    """The npz store as it is written into a glacier directory."""
+
+    def test_write_and_read_npz(self, tmp_path, hef_gdir):
+        """A group is written under data_store and read back verbatim."""
         cfg.initialize()
         cfg.PATHS["working_dir"] = str(tmp_path)
         gdir = hef_gdir
+        data = {"flux": np.arange(4, dtype=np.float64), "flux_out": 2.5}
 
-        # Real geometries are shapely polygons read from the store.
-        geom = dict(gdir.read_store("geometries"))
-        assert isinstance(geom["polygon_hr"], (shpg.Polygon, shpg.MultiPolygon))
+        gdir.write_npz(data, "inversion_output", filesuffix="_test")
 
-        # Guarantee hole / multipolygon coverage regardless of the glacier.
-        geom["polygon_hr"] = _holed_polygon
-        geom["polygon_pix"] = _multipolygon_two_holes
-        geom["polygon_area"] = float(geom["polygon_hr"].area)
-        geom["catchment_indices"] = [
-            np.array([[1, 2], [3, 4]]),
-            np.array([[5, 6]]),
-        ]
-
-        gdir.write_store(geom, "geometries", filesuffix="_zarrtest")
-
-        # Check it's really zarr, group and flattened ring arrays exist
-        zarr_fp = gdir.get_filepath("data_store").replace(".pkl", ".zarr")
-        group_dir = os.path.join(zarr_fp, "geometries_zarrtest")
-        assert os.path.isdir(group_dir)
-        assert os.path.isdir(os.path.join(group_dir, "polygon_hr", "vertices"))
-
-        back = gdir.read_store("geometries", filesuffix="_zarrtest")
-        assert back["polygon_hr"].equals(geom["polygon_hr"])
-        assert len(list(back["polygon_hr"].interiors)) == 1
-        assert back["polygon_pix"].equals(geom["polygon_pix"])
-        assert len(list(back["polygon_pix"].geoms[0].interiors)) == 2
-        assert_allclose(back["polygon_area"], geom["polygon_area"])
-        for got, exp in zip(
-            back["catchment_indices"], geom["catchment_indices"]
-        ):
-            assert_allclose(got, exp)
+        expected = os.path.join(
+            gdir.dir, "data_store", "inversion_output_test.npz"
+        )
+        assert os.path.isfile(expected)
+        back = gdir.read_npz("inversion_output", filesuffix="_test")
+        assert_allclose(back["flux"], data["flux"])
+        assert back["flux_out"] == 2.5
 
     def test_underscore_prefixed_filesuffix_group_name(
         self, tmp_path, hef_gdir
     ):
-        """A '_'-prefixed filesuffix (OGGM convention) must yield a single
-        underscore in the zarr group name."""
+        """A '_'-prefixed filesuffix, as OGGM writes them, must yield a
+        single underscore in the group's file name."""
+        cfg.initialize()
+        cfg.PATHS["working_dir"] = str(tmp_path)
+        gdir = hef_gdir
+        data = {"flux": np.array([1.0, 2.0, 3.0])}
+
+        gdir.write_store(data, "inversion_input", filesuffix="_historical")
+
+        store_dir = os.path.join(gdir.dir, "data_store")
+        assert os.path.isfile(
+            os.path.join(store_dir, "inversion_input_historical.npz")
+        )
+        assert not os.path.exists(
+            os.path.join(store_dir, "inversion_input__historical.npz")
+        )
+        back = gdir.read_store("inversion_input", filesuffix="_historical")
+        assert_allclose(back["flux"], data["flux"])
+
+    def test_read_npz_raises_when_missing(self, tmp_path, hef_gdir):
+        """Reading a group that was never written is an error."""
+        cfg.initialize()
+        cfg.PATHS["working_dir"] = str(tmp_path)
+
+        with pytest.raises(FileNotFoundError):
+            hef_gdir.read_npz("inversion_output", filesuffix="_absent")
+
+
+def assert_store_equal(actual, expected, context=""):
+    """Assert that two stored objects match, whatever they hold."""
+    assert type(actual) is type(expected), f"{context}: {type(actual)}"
+    if isinstance(expected, dict):
+        assert set(actual) == set(expected), context
+        for key in expected:
+            assert_store_equal(actual[key], expected[key], f"{context}.{key}")
+    elif isinstance(expected, (list, tuple)):
+        assert len(actual) == len(expected), context
+        for i, item in enumerate(expected):
+            assert_store_equal(actual[i], item, f"{context}[{i}]")
+    elif isinstance(expected, np.ndarray):
+        assert actual.dtype == expected.dtype, context
+        assert_allclose(actual, expected, err_msg=context)
+    elif isinstance(expected, shapely.geometry.base.BaseGeometry):
+        assert actual.equals(expected), context
+    elif isinstance(expected, Flowline):
+        names = (
+            geozarr._FLOWLINE_ARGS
+            + geozarr._FLOWLINE_ATTRS
+            + (
+                "widths_m",
+                "section",
+                "thick",
+                "area_m2",
+                "volume_m3",
+            )
+        )
+        for name in names:
+            assert_store_equal(
+                getattr(actual, name),
+                getattr(expected, name),
+                f"{context}.{name}",
+            )
+        for name in geozarr._FLOWLINE_BED_ARGS[type(expected).__name__]:
+            assert_store_equal(
+                geozarr._get_bed_parameter(actual, name),
+                geozarr._get_bed_parameter(expected, name),
+                f"{context}.{name}",
+            )
+    elif isinstance(expected, Centerline):
+        for name in geozarr._CENTERLINE_ARGS + geozarr._CENTERLINE_ATTRS:
+            if hasattr(expected, name):
+                assert_store_equal(
+                    getattr(actual, name),
+                    getattr(expected, name),
+                    f"{context}.{name}",
+                )
+    elif isinstance(expected, float) and np.isnan(expected):
+        assert np.isnan(actual), context
+    else:
+        assert actual == expected, context
+
+
+class TestStoreRoundTrip:
+    """write_store and read_store must match what the pickles held."""
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "geometries",
+            "downstream_line",
+            "centerlines",
+            "inversion_flowlines",
+            "model_flowlines",
+            "inversion_input",
+        ],
+    )
+    def test_store_matches_pickle(self, tmp_path, hef_gdir, name):
+        """Each registry group round trips exactly as its pickle does."""
+        cfg.initialize()
+        cfg.PATHS["working_dir"] = str(tmp_path)
+        gdir = hef_gdir
+        if name == "model_flowlines":
+            from oggm import tasks
+
+            tasks.init_present_time_glacier(gdir)
+        original = gdir.read_store(name)
+
+        gdir.write_store(original, name, filesuffix="_npz")
+        gdir.write_pickle(original, name, filesuffix="_pkl")
+        back = gdir.read_store(name, filesuffix="_npz")
+        expected = gdir.read_pickle(name, filesuffix="_pkl")
+
+        assert os.path.isfile(gdir.get_store_filepath(name, "_npz"))
+        assert_store_equal(back, expected, name)
+
+
+class TestStoreFallback:
+    """How the store behaves when npz is absent or cannot hold the data."""
+
+    def test_read_store_falls_back_to_pickle_once(self, tmp_path, hef_gdir):
+        """A pickled group is still readable, and warns only once."""
+        from oggm.utils import _workflow
+
+        cfg.initialize()
+        cfg.PATHS["working_dir"] = str(tmp_path)
+        gdir = hef_gdir
+        gdir.write_pickle([1, 2, 3], "inversion_input", filesuffix="_pkl_only")
+
+        _workflow._warn_store_fallback.cache_clear()
+        with pytest.warns(Warning, match="Store data not found"):
+            back = gdir.read_store("inversion_input", filesuffix="_pkl_only")
+        assert back == [1, 2, 3]
+
+        with warnings.catch_warnings(record=True) as records:
+            warnings.simplefilter("always")
+            gdir.read_store("inversion_input", filesuffix="_pkl_only")
+        assert not any(
+            "Store data not found" in str(r.message) for r in records
+        )
+
+    def test_write_pickle_invalidates_the_npz_group(self, tmp_path, hef_gdir):
+        """A pickle written over a group must not be shadowed by the npz."""
+        cfg.initialize()
+        cfg.PATHS["working_dir"] = str(tmp_path)
+        gdir = hef_gdir
+        gdir.write_store(
+            {"flux": np.ones(2)}, "inversion_input", filesuffix="_stale"
+        )
+
+        gdir.write_pickle(
+            {"flux": np.zeros(2)}, "inversion_input", filesuffix="_stale"
+        )
+
+        assert not os.path.exists(
+            gdir.get_store_filepath("inversion_input", "_stale")
+        )
+        back = gdir.read_store("inversion_input", filesuffix="_stale")
+        assert_allclose(back["flux"], np.zeros(2))
+
+    def test_unsupported_data_falls_back_to_pickle(self, tmp_path, hef_gdir):
+        """Data the codec cannot hold is pickled instead, with a warning."""
         cfg.initialize()
         cfg.PATHS["working_dir"] = str(tmp_path)
         gdir = hef_gdir
 
-        data = {"flux": np.array([1.0, 2.0, 3.0])}
-        gdir.write_store(data, "inversion_input", filesuffix="_historical")
+        with pytest.warns(RuntimeWarning, match="falling back to pickle"):
+            gdir.write_store(
+                {"when": datetime.datetime(2020, 1, 1)},
+                "inversion_input",
+                filesuffix="_odd",
+            )
 
-        zarr_fp = gdir.get_filepath("data_store").replace(".pkl", ".zarr")
-        assert os.path.isdir(
-            os.path.join(zarr_fp, "inversion_input_historical")
-        )
         assert not os.path.exists(
-            os.path.join(zarr_fp, "inversion_input__historical")
+            gdir.get_store_filepath("inversion_input", "_odd")
         )
+        back = gdir.read_store("inversion_input", filesuffix="_odd")
+        assert back["when"] == datetime.datetime(2020, 1, 1)
 
-        back = gdir.read_store("inversion_input", filesuffix="_historical")
-        assert_allclose(back[0]["flux"], data["flux"])
-
-
-def _write_datatree_to_zarr(data_tree, fp):
-    """Mimic write_zarr's per-node write (no gdir needed)."""
-    import zarr
-
-    for node in data_tree.subtree:
-        ds = node.ds
-        if ds is None or (len(ds.data_vars) == 0 and len(ds.coords) == 0):
-            continue
-        ds.to_zarr(
-            fp,
-            group=(node.path.lstrip("/") or None),
-            mode="a",
-            zarr_format=2,
-            consolidated=False,
-        )
-    zarr.consolidate_metadata(fp)
-
-
-def _reconstruct_downstream_line(data_tree):
-    """Replicate the _validate_store downstream_line branch."""
-    out = oggmzarr.get_dict_from_datatree(data_tree)
-    if "downstream_line" in out:
-        out["downstream_line"] = oggmzarr._validate_linestring(
-            out["downstream_line"]
-        )
-    out["full_line"] = oggmzarr._validate_linestring(out.get("full_line"))
-    return out
-
-
-class TestDownstreamLineZarr:
-    """downstream_line must round-trip to zarr, including a full_line
-    LineString of a different length than downstream_line."""
-
-    def test_downstream_line_with_full_line_on_disk(self, tmp_path):
-        dline = shpg.LineString([(0, 0), (1, 1), (2, 2)])
-        # Deliberately a different length than downstream_line.
-        lline = shpg.LineString([(0, 0), (1, 1), (2, 2), (3, 3), (4, 4)])
-        out = {
-            "full_line": lline,
-            "downstream_line": dline,
-            "bedshapes": np.arange(3.0),
-            "surface_h": np.arange(3.0),
-        }
-
-        data_tree = oggmzarr.convert_pickles_to_datatree(
-            {"downstream_line": out}
-        )
-        fp = os.path.join(str(tmp_path), "data_store.zarr")
-        _write_datatree_to_zarr(data_tree, fp)
-
-        back = xr.open_datatree(
-            fp, group="downstream_line", engine="zarr", consolidated=True
-        )
-        result = _reconstruct_downstream_line(back)
-        assert result["downstream_line"].equals(dline)
-        assert result["full_line"].equals(lline)
-        assert_allclose(result["bedshapes"], out["bedshapes"])
-
-    def test_downstream_line_full_line_none(self, tmp_path):
-        dline = shpg.LineString([(0, 0), (1, 1), (2, 2)])
-        out = {"full_line": None, "downstream_line": dline}
-
-        data_tree = oggmzarr.convert_pickles_to_datatree(
-            {"downstream_line": out}
-        )
-        fp = os.path.join(str(tmp_path), "data_store.zarr")
-        _write_datatree_to_zarr(data_tree, fp)
-
-        back = xr.open_datatree(
-            fp, group="downstream_line", engine="zarr", consolidated=True
-        )
-        result = _reconstruct_downstream_line(back)
-        assert result["downstream_line"].equals(dline)
-        assert result["full_line"] is None
-
-
-def _reconstruct_model_flowlines(data_tree):
-    """Replicate the _validate_store model_flowline branch (numbered
-    child groups -> list of reconstructed Flowlines)."""
-    keys = sorted(data_tree.children, key=int)
-    return [oggmzarr.get_flowline_from_datatree(data_tree[k]) for k in keys]
-
-
-class TestModelFlowlineZarr:
-    """model_flowlines must round-trip to zarr for every Flowline subclass,
-    not just MixedBedFlowline.
-
-    Uses a function-level round-trip (convert -> on-disk zarr -> reconstruct)
-    rather than the hef_gdir fixture: the public write_store/read_store path
-    for a non-Mixed flowline is already exercised end-to-end by
-    test_prepro.py::TestPyGEM_compat::test_flowlines_from_gmip_data.
-    """
-
-    @pytest.mark.parametrize(
-        "make_fl, cls_name",
-        [
-            (_make_parabolic_flowline, "ParabolicBedFlowline"),
-            (_make_rectangular_flowline, "RectangularBedFlowline"),
-            (_make_trapezoidal_flowline, "TrapezoidalBedFlowline"),
-            (_make_mixed_bed_flowline, "MixedBedFlowline"),
-        ],
-    )
-    def test_model_flowline_roundtrip_on_disk(
-        self, tmp_path, make_fl, cls_name
-    ):
+    def test_has_file_sees_a_store_group(self, tmp_path, hef_gdir):
+        """has_file must find a group that only exists in the store."""
         cfg.initialize()
-        fl = make_fl()
+        cfg.PATHS["working_dir"] = str(tmp_path)
+        gdir = hef_gdir
 
-        data_tree = oggmzarr.convert_pickles_to_datatree(
-            {"model_flowlines": [fl]}
+        assert not gdir.has_file("inversion_input", filesuffix="_probe")
+        gdir.write_store(
+            {"flux": np.ones(2)}, "inversion_input", filesuffix="_probe"
         )
-        # The concrete class is recorded as a node attr (not MixedBedFlowline).
-        assert data_tree["model_flowlines"]["0"].attrs["_flowline_class"] == (
-            cls_name
-        )
-
-        fp = os.path.join(str(tmp_path), "data_store.zarr")
-        _write_datatree_to_zarr(data_tree, fp)
-
-        back = xr.open_datatree(
-            fp, group="model_flowlines", engine="zarr", consolidated=True
-        )
-        fls = _reconstruct_model_flowlines(back)
-        assert len(fls) == 1
-        rfl = fls[0]
-        assert type(rfl).__name__ == cls_name
-        assert_allclose(rfl.surface_h, fl.surface_h)
-        assert_allclose(rfl.bed_h, fl.bed_h)
-        assert_allclose(rfl.widths_m, fl.widths_m)
-        assert_allclose(rfl.section, fl.section)
-        assert_allclose(rfl.area_m2, fl.area_m2)
-        assert_allclose(rfl.volume_m3, fl.volume_m3)
+        assert gdir.has_file("inversion_input", filesuffix="_probe")

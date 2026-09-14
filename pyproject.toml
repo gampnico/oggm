@@ -33,7 +33,6 @@ dependencies = [
     "shapely",
     "xarray",
     "xvec>=0.5.2",
-    "zarr",
     "pyarrow",
 ]
 

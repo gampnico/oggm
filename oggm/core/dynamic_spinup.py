@@ -1761,20 +1761,15 @@ def dynamic_melt_f_run_with_dynamic_spinup_fallback(
                     ref_volume_m3=gdir.observations['ref_volume_m3']['value'],
                     ref_volume_year=gdir.observations['ref_volume_m3']['year'],
                     add_to_log_file=False)
-    if os.path.isfile(os.path.join(gdir.dir,
-                                   'model_flowlines_dyn_melt_f_calib.pkl')):
-        os.remove(os.path.join(gdir.dir,
-                               'model_flowlines_dyn_melt_f_calib.pkl'))
-    zarr_fp = gdir.get_filepath("data_store").replace(".pkl", ".zarr")
-    zarr_group = os.path.join(zarr_fp, "model_flowlines__dyn_melt_f_calib")
-    if os.path.exists(zarr_group):
-        shutil.rmtree(zarr_group)
-        try:
-            import zarr as _zarr
-
-            _zarr.consolidate_metadata(zarr_fp)
-        except Exception:
-            pass
+    # calibration flowlines are stale after falling back
+    for calib_fp in [
+        gdir.get_filepath("model_flowlines", filesuffix="_dyn_melt_f_calib"),
+        gdir.get_store_filepath(
+            "model_flowlines", filesuffix="_dyn_melt_f_calib"
+        ),
+    ]:
+        if os.path.isfile(calib_fp):
+            os.remove(calib_fp)
 
     if target_yr is None:
         target_yr = gdir.rgi_date + 1  # + 1 converted to hydro years
