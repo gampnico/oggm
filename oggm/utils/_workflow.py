@@ -74,7 +74,7 @@ from oggm.utils._funcs import (calendardate_to_hydrodate, date_to_floatyear,
                                weighted_quantile_1d)
 from oggm.utils._downloads import (get_demo_file, get_wgms_files,
                                    get_rgi_glacier_entities)
-import oggm.utils.geozarr as geozarr
+import oggm.utils.transcoder as transcoder
 from oggm import cfg
 from oggm.exceptions import InvalidParamsError, InvalidWorkflowError
 
@@ -4194,7 +4194,7 @@ class GlacierDirectory(object):
             meta = json.loads(str(data["__meta__"]))
             arrays = {k: data[k] for k in data.files if k != "__meta__"}
 
-        return geozarr.decode_npz(arrays, meta, filename)
+        return transcoder.decode_npz(arrays, meta, filename)
 
     def read_store(
         self, filename: str, filesuffix: str = "", **kwargs
@@ -4292,7 +4292,7 @@ class GlacierDirectory(object):
             Additional keyword arguments to pass to numpy.savez().
         """
         group = f"{filename}{filesuffix}"
-        arrays, meta = geozarr.convert_pickles_to_npz(var, group)
+        arrays, meta = transcoder.convert_pickles_to_npz(var, group)
         fp = self.get_store_filepath(filename, filesuffix=filesuffix)
         mkdir(os.path.dirname(fp))
         # Write beside the target and move it into place, so that an

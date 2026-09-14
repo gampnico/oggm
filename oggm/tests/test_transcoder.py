@@ -16,7 +16,7 @@ salem = pytest.importorskip("salem")
 
 # Locals
 import oggm.cfg as cfg
-import oggm.utils.geozarr as geozarr
+import oggm.utils.transcoder as transcoder
 
 # Globals
 pytestmark = pytest.mark.test_env("workflow")
@@ -127,8 +127,8 @@ class TestNpzCodec:
             "missing": None,
         }
 
-        arrays, meta = geozarr.convert_pickles_to_npz(data, "inversion_input")
-        back = geozarr.decode_npz(arrays, meta, "inversion_input")
+        arrays, meta = transcoder.convert_pickles_to_npz(data, "inversion_input")
+        back = transcoder.decode_npz(arrays, meta, "inversion_input")
 
         assert set(back) == set(data)
         assert_allclose(back["flux"], data["flux"])
@@ -147,8 +147,8 @@ class TestNpzCodec:
             "np_bool": np.bool_(False),
         }
 
-        arrays, meta = geozarr.convert_pickles_to_npz(data)
-        back = geozarr.decode_npz(arrays, meta)
+        arrays, meta = transcoder.convert_pickles_to_npz(data)
+        back = transcoder.decode_npz(arrays, meta)
 
         for key, expected in data.items():
             assert type(back[key]) is type(expected), key
@@ -161,8 +161,8 @@ class TestNpzCodec:
             {"width": np.zeros(3), "shape": (4, 5)},
         ]
 
-        arrays, meta = geozarr.convert_pickles_to_npz(data, "inversion_output")
-        back = geozarr.decode_npz(arrays, meta, "inversion_output")
+        arrays, meta = transcoder.convert_pickles_to_npz(data, "inversion_output")
+        back = transcoder.decode_npz(arrays, meta, "inversion_output")
 
         assert isinstance(back, list) and len(back) == 2
         assert_allclose(back[0]["width"], np.ones(2))
@@ -176,8 +176,8 @@ class TestNpzCodec:
             "orig_head": shpg.Point(3, 4),
         }
 
-        arrays, meta = geozarr.convert_pickles_to_npz(data, "downstream_line")
-        back = geozarr.decode_npz(arrays, meta, "downstream_line")
+        arrays, meta = transcoder.convert_pickles_to_npz(data, "downstream_line")
+        back = transcoder.decode_npz(arrays, meta, "downstream_line")
 
         assert back["downstream_line"].equals(data["downstream_line"])
         assert back["orig_head"].equals(data["orig_head"])
@@ -195,8 +195,8 @@ class TestNpzCodec:
         )
         data = {"polygon_hr": poly, "polygon_pix": multi}
 
-        arrays, meta = geozarr.convert_pickles_to_npz(data, "geometries")
-        back = geozarr.decode_npz(arrays, meta, "geometries")
+        arrays, meta = transcoder.convert_pickles_to_npz(data, "geometries")
+        back = transcoder.decode_npz(arrays, meta, "geometries")
 
         assert back["polygon_hr"].equals(poly)
         assert len(back["polygon_hr"].interiors) == 1
@@ -211,8 +211,8 @@ class TestNpzCodec:
         ]
         data = {"catchment_indices": indices}
 
-        arrays, meta = geozarr.convert_pickles_to_npz(data, "geometries")
-        back = geozarr.decode_npz(arrays, meta, "geometries")
+        arrays, meta = transcoder.convert_pickles_to_npz(data, "geometries")
+        back = transcoder.decode_npz(arrays, meta, "geometries")
 
         assert len(arrays) <= 4, "ragged lists must be packed into few entries"
         assert len(back["catchment_indices"]) == 50
@@ -229,8 +229,8 @@ class TestNpzCodec:
         ]
         data = {"geometrical_widths": widths}
 
-        arrays, meta = geozarr.convert_pickles_to_npz(data, "centerlines")
-        back = geozarr.decode_npz(arrays, meta, "centerlines")
+        arrays, meta = transcoder.convert_pickles_to_npz(data, "centerlines")
+        back = transcoder.decode_npz(arrays, meta, "centerlines")
 
         got = back["geometrical_widths"]
         assert len(got) == 3
@@ -246,10 +246,10 @@ class TestNpzCodec:
         ] * tributary.nx
         tributary.set_flows_to(trunk)
 
-        arrays, meta = geozarr.convert_pickles_to_npz(
+        arrays, meta = transcoder.convert_pickles_to_npz(
             [tributary, trunk], "inversion_flowlines"
         )
-        back = geozarr.decode_npz(arrays, meta, "inversion_flowlines")
+        back = transcoder.decode_npz(arrays, meta, "inversion_flowlines")
 
         assert len(back) == 2
         assert all(isinstance(cl, Centerline) for cl in back)
@@ -276,10 +276,10 @@ class TestNpzCodec:
         """Every Flowline subclass comes back as itself, geometry intact."""
         flowline = factory()
 
-        arrays, meta = geozarr.convert_pickles_to_npz(
+        arrays, meta = transcoder.convert_pickles_to_npz(
             [flowline], "model_flowlines"
         )
-        back = geozarr.decode_npz(arrays, meta, "model_flowlines")
+        back = transcoder.decode_npz(arrays, meta, "model_flowlines")
 
         assert len(back) == 1
         got = back[0]
@@ -304,10 +304,10 @@ class TestNpzCodec:
         flowline = _make_parabolic_flowline()
         flowline.map_trafo = partial(grid.ij_to_crs, crs=salem.wgs84)
 
-        arrays, meta = geozarr.convert_pickles_to_npz(
+        arrays, meta = transcoder.convert_pickles_to_npz(
             [flowline], "model_flowlines"
         )
-        back = geozarr.decode_npz(arrays, meta, "model_flowlines")[0]
+        back = transcoder.decode_npz(arrays, meta, "model_flowlines")[0]
 
         assert callable(back.map_trafo)
         assert_allclose(
@@ -385,8 +385,8 @@ def assert_store_equal(actual, expected, context=""):
         assert actual.equals(expected), context
     elif isinstance(expected, Flowline):
         names = (
-            geozarr._FLOWLINE_ARGS
-            + geozarr._FLOWLINE_ATTRS
+            transcoder._FLOWLINE_ARGS
+            + transcoder._FLOWLINE_ATTRS
             + (
                 "widths_m",
                 "section",
@@ -401,14 +401,14 @@ def assert_store_equal(actual, expected, context=""):
                 getattr(expected, name),
                 f"{context}.{name}",
             )
-        for name in geozarr._FLOWLINE_BED_ARGS[type(expected).__name__]:
+        for name in transcoder._FLOWLINE_BED_ARGS[type(expected).__name__]:
             assert_store_equal(
-                geozarr._get_bed_parameter(actual, name),
-                geozarr._get_bed_parameter(expected, name),
+                transcoder._get_bed_parameter(actual, name),
+                transcoder._get_bed_parameter(expected, name),
                 f"{context}.{name}",
             )
     elif isinstance(expected, Centerline):
-        for name in geozarr._CENTERLINE_ARGS + geozarr._CENTERLINE_ATTRS:
+        for name in transcoder._CENTERLINE_ARGS + transcoder._CENTERLINE_ATTRS:
             if hasattr(expected, name):
                 assert_store_equal(
                     getattr(actual, name),
