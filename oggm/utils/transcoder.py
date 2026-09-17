@@ -747,7 +747,7 @@ def convert_pickles_to_npz(data: Any, name: str = "") -> tuple[dict, dict]:
         The arrays to write, and the metadata describing them.
     """
     arrays = {}
-    root = encode_node(data, "", arrays)
+    root = encode_node(data, path=name, arrays=arrays)
 
     return arrays, {"schema": SCHEMA_VERSION, "root": root}
 
