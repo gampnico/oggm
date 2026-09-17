@@ -681,7 +681,7 @@ break some code, but remain minor in nature:
 - ``read_pickle`` and ``write_pickle`` are now deprecated in favour of
   ``read_store`` and ``write_store``. The latter uses npz files inside glacier
   directories instead of pickles. Users should migrate to the new functions, as
-  compatibility with pickles is not guaranteed in the future (:pull:`1908`).
+  compatibility with pickles is not guaranteed in the future. (:pull:`1908`).
   By `Nicolas Gampierakis <https://github.com/gampnico>`_.
 
 
