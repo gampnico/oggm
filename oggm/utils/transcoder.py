@@ -21,7 +21,7 @@ def _join_path(path: str, key: str) -> str:
         Path of the parent node, empty at the root.
     key : str
         Key of the child node.
-s
+
     Returns
     -------
     str
