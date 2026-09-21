@@ -3,13 +3,47 @@
 Encode and decode glacier directory data stores.
 """
 
+import os
+from functools import partial
+from pathlib import Path
+from typing import Any, Callable
+
 import numpy as np
 import shapely
 from salem import Grid, wgs84
-from functools import partial
-from typing import Callable, Any
 
 SCHEMA_VERSION = 1
+
+
+def get_store_paths(directory: str | Path, pickle: bool = False) -> list[Path]:
+    """Get all file paths for all available data stores in a directory.
+
+    Parameters
+    ----------
+    directory : str or Path
+        Path to the directory.
+    pickle : bool, optional
+        If True, search for  pickle files. Default is False.
+
+    Returns
+    -------
+    list[Path]
+        A list of file paths.
+    """
+    directory = Path(directory)
+    if not directory.is_dir():
+        raise ValueError(f"{directory} is not a valid directory.")
+
+    # Using glob is slower and doesn't return the same result
+    if not pickle:
+        return [
+            Path(f)
+            # is it safe to hardcode this?
+            for f in os.listdir(directory / "data_store")
+            if f.endswith(".npz")
+        ]
+    else:
+        return [Path(f) for f in os.listdir(directory) if f.endswith(".pkl")]
 
 
 def _join_path(path: str, key: str) -> str:
@@ -132,11 +166,8 @@ def _get_bed_parameter(flowline, name: str):
     Any
         The value to store for `name`.
     """
-    from oggm.core.flowline import (
-        MixedBedFlowline,
-        RectangularBedFlowline,
-        TrapezoidalBedFlowline,
-    )
+    from oggm.core.flowline import (MixedBedFlowline, RectangularBedFlowline,
+                                    TrapezoidalBedFlowline)
 
     if name == "lambdas":
         if isinstance(flowline, MixedBedFlowline):

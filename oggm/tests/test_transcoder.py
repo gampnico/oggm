@@ -500,6 +500,29 @@ class TestStoreRoundTrip:
 class TestStoreFallback:
     """How the store behaves when npz is absent or cannot hold the data."""
 
+    def test_get_store_paths(self, tmp_path, hef_gdir):
+        """get_store_paths returns both npz and pickle files."""
+        cfg.initialize()
+        cfg.PATHS["working_dir"] = str(tmp_path)
+        gdir = hef_gdir
+        gdir.write_store(
+            {"flux": np.ones(2)}, "inversion_input", filesuffix="_default"
+        )
+        gdir.write_npz(
+            {"flux": np.ones(2)}, "inversion_input", filesuffix="_npz"
+        )
+        gdir.write_pickle(
+            {"flux": np.zeros(2)}, "inversion_input", filesuffix="_pkl"
+        )
+
+        store_paths_default = transcoder.get_store_paths(gdir.dir)
+        store_paths_npz = transcoder.get_store_paths(gdir.dir, pickle=False)
+        store_paths_pkl = transcoder.get_store_paths(gdir.dir, pickle=True)
+
+        assert any(f.name.endswith("_pkl.pkl") for f in store_paths_pkl)
+        assert any(f.name.endswith(".npz") for f in store_paths_npz)
+        assert any(f.name.endswith(".npz") for f in store_paths_default)
+
     def test_read_store_falls_back_to_pickle_once(self, tmp_path, hef_gdir):
         """A pickled group is still readable, and warns only once."""
         from oggm.utils import _workflow
