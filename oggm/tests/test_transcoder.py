@@ -312,6 +312,52 @@ class TestNpzCodec:
         )
 
 
+class TestCodecDispatch:
+    """The order codecs are matched in, which decides the node tags."""
+
+    def test_every_tag_has_a_decoder(self):
+        """Every tag an encoder writes must resolve to a decoder."""
+        tags = set()
+        for entry in transcoder._CODECS:
+            names = entry[0]
+            tags.update([names] if isinstance(names, str) else names)
+
+        assert tags == set(transcoder._DECODERS)
+        assert transcoder._DECODERS["list"] is transcoder._DECODERS["tuple"]
+
+    def test_npscalar_is_matched_before_scalar(self):
+        """np.float64 subclasses float, so the order decides the tag."""
+        assert transcoder.encode_node(np.float64(0.1), "p", {})["t"] == (
+            "npscalar"
+        )
+        assert transcoder.encode_node(np.str_("a"), "p", {})["t"] == "npscalar"
+        assert transcoder.encode_node(np.bool_(True), "p", {})["t"] == (
+            "npscalar"
+        )
+        assert transcoder.encode_node(0.1, "p", {})["t"] == "scalar"
+
+    def test_centerline_lists(self):
+
+        # A list of Centerlines must not encode as a plain list.
+        node = transcoder.encode_node([_make_centerline()], "p", {})
+        assert node["t"] == "centerline_list"
+
+        with pytest.raises(TypeError, match="Centerline"):
+            transcoder.encode_node((_make_centerline(),), "p", {})
+
+    def test_encode_node_special_cases(self):
+
+        # test an empty list is encoded as a plain list
+        node = transcoder.encode_node([], "p", {})
+        assert node["t"] == "list"
+        assert node["items"] == []
+
+    def test_an_unknown_tag_raises_a_value_error(self):
+        """A node carrying a tag the codec does not know is rejected."""
+        with pytest.raises(ValueError, match="Unknown node type"):
+            transcoder.decode_node({"t": "not_a_real_tag"}, {})
+
+
 class TestNpzStore:
     """The npz store as it is written into a glacier directory."""
 

@@ -98,9 +98,8 @@ _FLOWLINE_ATTRS = (
     "glacier_length_method",
 )
 
-"""Bed parameters, by subclass
-The value stored is not always the attribute of the same name
-(see _get_bed_parameter()."""
+# Bed parameters, by subclass. The value stored is not always the
+# attribute of the same name (see _get_bed_parameter()).
 _FLOWLINE_BED_ARGS = {
     "MixedBedFlowline": (
         "section",
@@ -495,77 +494,69 @@ def _encode_array_list(obj: list, path: str, arrays: dict) -> dict:
     return {"t": "array_list", "k": path}
 
 
-def encode_node(obj: Any, path: str, arrays: dict) -> dict:
-    """Encode an object into a JSON-compatible node.
+def _encode_none(obj: Any, path: str, arrays: dict) -> dict:
+    """Encode None."""
+    return {"t": "none"}
 
-    Any array encountered is stored in `arrays` under a key derived from
-    `path`, so that the node itself stays JSON-serialisable.
 
-    TODO: Refactor for legibility, e.g. by splitting.
+def _encode_array(obj: np.ndarray, path: str, arrays: dict) -> dict:
+    """Encode an array, storing it under this node's path."""
+    if obj.dtype == object:
+        raise TypeError("Cannot encode an object-dtype array.")
+    arrays[path] = obj
 
-    Parameters
-    ----------
-    obj : Any
-        The object to encode.
-    path : str
-        Path of this node within the tree, used to key its arrays.
-    arrays : dict
-        Mapping of array keys to arrays, updated in place.
+    return {"t": "array", "k": path}
 
-    Returns
-    -------
-    dict
-        A JSON-compatible description of `obj`.
 
-    Raises
-    ------
-    TypeError
-        If `obj` is of a type the codec cannot represent.
+def _encode_npscalar(obj: np.generic, path: str, arrays: dict) -> dict:
+    """Encode a numpy scalar, keeping its dtype."""
+    return {"t": "npscalar", "dtype": obj.dtype.str, "v": obj.item()}
+
+
+def _encode_scalar(obj: Any, path: str, arrays: dict) -> dict:
+    """Encode a Python scalar."""
+    return {"t": "scalar", "v": obj}
+
+
+def _encode_linestring(obj: Any, path: str, arrays: dict) -> dict:
+    """Encode a LineString as its coordinates."""
+    arrays[path] = shapely.get_coordinates(obj)
+
+    return {"t": "linestring", "k": path}
+
+
+def _encode_point(obj: Any, path: str, arrays: dict) -> dict:
+    """Encode a Point as a flat pair of coordinates."""
+    arrays[path] = shapely.get_coordinates(obj).flatten()
+
+    return {"t": "point", "k": path}
+
+
+def _encode_dict(obj: dict, path: str, arrays: dict) -> dict:
+    """Encode a dict, recursing into each value.
+
+    Keys must be strings, since the node is written out as JSON.
     """
-    if obj is None:
-        return {"t": "none"}
-    if isinstance(obj, np.ndarray):
-        if obj.dtype == object:
-            raise TypeError("Cannot encode an object-dtype array.")
-        arrays[path] = obj
-        return {"t": "array", "k": path}
-    if isinstance(obj, np.generic):
-        # Before the Python scalars, since np.float64 subclasses float.
-        return {"t": "npscalar", "dtype": obj.dtype.str, "v": obj.item()}
-    if isinstance(obj, (bool, int, float, str)):
-        return {"t": "scalar", "v": obj}
-    if isinstance(obj, shapely.LineString):
-        arrays[path] = shapely.get_coordinates(obj)
-        return {"t": "linestring", "k": path}
-    if isinstance(obj, shapely.Point):
-        arrays[path] = shapely.get_coordinates(obj).flatten()
-        return {"t": "point", "k": path}
-    if isinstance(obj, (shapely.Polygon, shapely.MultiPolygon)):
-        return _encode_polygon(obj, path, arrays)
-    if isinstance(obj, dict):
-        items = {}
-        for key, value in obj.items():
-            if not isinstance(key, str):
-                raise TypeError(f"Cannot encode a dict with key {key!r}.")
-            items[key] = encode_node(value, _join_path(path, key), arrays)
-        return {"t": "dict", "items": items}
-    if isinstance(obj, list) and _is_centerline_list(obj):
-        return encode_centerline_list(obj, path, arrays)
-    if isinstance(obj, list) and _is_multilinestring_list(obj):
-        return _encode_multilinestring_list(obj, path, arrays)
-    if isinstance(obj, list) and _is_packable_array_list(obj):
-        return _encode_array_list(obj, path, arrays)
-    if isinstance(obj, (list, tuple)):
-        items = [
-            encode_node(item, _join_path(path, str(i)), arrays)
-            for i, item in enumerate(obj)
-        ]
-        return {
-            "t": "tuple" if isinstance(obj, tuple) else "list",
-            "items": items,
-        }
+    items = {}
+    for key, value in obj.items():
+        if not isinstance(key, str):
+            raise TypeError(f"Cannot encode a dict with key {key!r}.")
+        items[key] = encode_node(value, _join_path(path, key), arrays)
 
-    raise TypeError(f"Cannot encode an object of type {type(obj).__name__}.")
+    return {"t": "dict", "items": items}
+
+
+def _encode_sequence(obj: Any, path: str, arrays: dict) -> dict:
+    """Encode a list or a tuple, recursing into each item."""
+    items = [
+        encode_node(item, _join_path(path, str(i)), arrays)
+        for i, item in enumerate(obj)
+    ]
+
+    return {
+        "t": "tuple" if isinstance(obj, tuple) else "list",
+        "items": items,
+    }
 
 
 def _decode_polygon(
@@ -674,12 +665,189 @@ def _decode_array_list(node: dict, arrays: dict) -> list:
     )
 
 
+def _decode_none(node: dict, arrays: dict) -> None:
+    """Reconstruct None."""
+    return None
+
+
+def _decode_array(node: dict, arrays: dict) -> np.ndarray:
+    """Reconstruct an array from its stored path."""
+    return arrays[node["k"]]
+
+
+def _decode_npscalar(node: dict, arrays: dict) -> Any:
+    """Reconstruct a numpy scalar, restoring its dtype."""
+    return np.dtype(node["dtype"]).type(node["v"])
+
+
+def _decode_scalar(node: dict, arrays: dict) -> Any:
+    """Reconstruct a Python scalar."""
+    return node["v"]
+
+
+def _decode_linestring(node: dict, arrays: dict) -> shapely.LineString:
+    """Reconstruct a LineString from its coordinates."""
+    return shapely.LineString(arrays[node["k"]])
+
+
+def _decode_point(node: dict, arrays: dict) -> shapely.Point:
+    """Reconstruct a Point from its coordinates."""
+    return shapely.Point(arrays[node["k"]])
+
+
+def _decode_dict(node: dict, arrays: dict) -> dict:
+    """Reconstruct a dict, recursing into each value."""
+    return {
+        key: decode_node(child, arrays) for key, child in node["items"].items()
+    }
+
+
+def _decode_sequence(node: dict, arrays: dict) -> list | tuple:
+    """Reconstruct a list or a tuple, recursing into each item."""
+    items = [decode_node(child, arrays) for child in node["items"]]
+
+    return tuple(items) if node["t"] == "tuple" else items
+
+
+def _is_centerline_list_node(obj: Any) -> bool:
+    """Check for a list of Centerlines, excluding tuples."""
+    return isinstance(obj, list) and _is_centerline_list(obj)
+
+
+def _is_multilinestring_list_node(obj: Any) -> bool:
+    """Check for a list of MultiLineStrings, excluding tuples."""
+    return isinstance(obj, list) and _is_multilinestring_list(obj)
+
+
+def _is_packable_array_list_node(obj: Any) -> bool:
+    """Check for a packable list of arrays, excluding tuples."""
+    return isinstance(obj, list) and _is_packable_array_list(obj)
+
+
+"""
+NOTE: The order of the codecs matters! `npscalar` must precede `scalar`,
+since `np.float64` subclasses `float` and `np.str_` subclasses `str`.
+The three list codecs must precede the generic sequence codec, or a list
+of Centerlines is encoded item by item and rejected.
+
+The first field is the tag the encoder writes, or a tuple of tags where
+one encoder writes more than one. Every encoder takes (obj, path, arrays)
+and returns a node; every decoder takes (node, arrays) and returns the
+object.
+"""
+
+_CODECS = (
+    ("none", lambda o: o is None, _encode_none, _decode_none),
+    (
+        "array",
+        lambda o: isinstance(o, np.ndarray),
+        _encode_array,
+        _decode_array,
+    ),
+    (
+        "npscalar",
+        lambda o: isinstance(o, np.generic),
+        _encode_npscalar,
+        _decode_npscalar,
+    ),
+    (
+        "scalar",
+        lambda o: isinstance(o, (bool, int, float, str)),
+        _encode_scalar,
+        _decode_scalar,
+    ),
+    (
+        "linestring",
+        lambda o: isinstance(o, shapely.LineString),
+        _encode_linestring,
+        _decode_linestring,
+    ),
+    (
+        "point",
+        lambda o: isinstance(o, shapely.Point),
+        _encode_point,
+        _decode_point,
+    ),
+    (
+        "polygon",
+        lambda o: isinstance(o, (shapely.Polygon, shapely.MultiPolygon)),
+        _encode_polygon,
+        _decode_polygon,
+    ),
+    ("dict", lambda o: isinstance(o, dict), _encode_dict, _decode_dict),
+    (
+        "centerline_list",
+        _is_centerline_list_node,
+        encode_centerline_list,
+        decode_centerline_list,
+    ),
+    (
+        "multilinestring_list",
+        _is_multilinestring_list_node,
+        _encode_multilinestring_list,
+        _decode_multilinestring_list,
+    ),
+    (
+        "array_list",
+        _is_packable_array_list_node,
+        _encode_array_list,
+        _decode_array_list,
+    ),
+    (
+        ("list", "tuple"),
+        lambda o: isinstance(o, (list, tuple)),
+        _encode_sequence,
+        _decode_sequence,
+    ),
+)
+
+# The sequence codec writes two tags so the tags field is flattened.
+# Keying this on the row's name would make the tag transient.
+_DECODERS = {
+    tag: decode
+    for tags, _, _, decode in _CODECS
+    for tag in ((tags,) if isinstance(tags, str) else tags)
+}
+
+
+def encode_node(obj: Any, path: str, arrays: dict) -> dict:
+    """Encode an object into a JSON-compatible node.
+
+    Any array encountered is stored in `arrays` under a key derived from
+    `path`, so that the node itself stays JSON-serialisable. The codec
+    is chosen from the first matching entry in :data:`_CODECS`
+
+    Parameters
+    ----------
+    obj : Any
+        The object to encode.
+    path : str
+        Path of this node within the tree, used to key its arrays.
+    arrays : dict
+        Mapping of array keys to arrays, updated in place.
+
+    Returns
+    -------
+    dict
+        A JSON-compatible description of `obj`.
+
+    Raises
+    ------
+    TypeError
+        If `obj` is of a type the codec cannot represent.
+    """
+    for _, matches, encode, _ in _CODECS:
+        if matches(obj):
+            return encode(obj, path, arrays)
+
+    raise TypeError(f"Cannot encode an object of type {type(obj).__name__}.")
+
+
 def decode_node(node: dict, arrays: dict) -> Any:
     """Reconstruct an object from an encoded node.
 
-    Inverse of :func:`encode_node`.
-
-    TODO: Refactor for legibility.
+    Inverse of :func:`encode_node`. The decoder is looked up from the
+    first matching entry in :data:`_DECODERS`.
 
     Parameters
     ----------
@@ -698,37 +866,12 @@ def decode_node(node: dict, arrays: dict) -> Any:
     ValueError
         If the node carries a type the codec does not know.
     """
-    kind = node["t"]
-    if kind == "none":
-        return None
-    if kind == "array":
-        return arrays[node["k"]]
-    if kind == "scalar":
-        return node["v"]
-    if kind == "npscalar":
-        return np.dtype(node["dtype"]).type(node["v"])
-    if kind == "linestring":
-        return shapely.LineString(arrays[node["k"]])
-    if kind == "point":
-        return shapely.Point(arrays[node["k"]])
-    if kind == "polygon":
-        return _decode_polygon(node, arrays)
-    if kind == "dict":
-        return {
-            key: decode_node(child, arrays)
-            for key, child in node["items"].items()
-        }
-    if kind == "centerline_list":
-        return decode_centerline_list(node, arrays)
-    if kind == "multilinestring_list":
-        return _decode_multilinestring_list(node, arrays)
-    if kind == "array_list":
-        return _decode_array_list(node, arrays)
-    if kind in ("list", "tuple"):
-        items = [decode_node(child, arrays) for child in node["items"]]
-        return tuple(items) if kind == "tuple" else items
+    try:
+        decode = _DECODERS[node["t"]]
+    except KeyError:
+        raise ValueError(f"Unknown node type {node['t']!r}.") from None
 
-    raise ValueError(f"Unknown node type {kind!r}.")
+    return decode(node, arrays)
 
 
 def encode_npz(data: Any, name: str = "") -> tuple[dict, dict]:
@@ -780,9 +923,6 @@ def _extract_polygon_coords(geometry: shapely.Polygon) -> list[tuple]:
     Polygons may contain interior holes, MultiPolygons may contain
     several parts, each with its own holes. Every ring is returned with
     the index of the part it belongs to.
-
-    TODO: This is streamable, but it may be more efficient to use a
-    shapefile instead.
 
     Parameters
     ----------
