@@ -4292,7 +4292,7 @@ class GlacierDirectory(object):
             Additional keyword arguments to pass to numpy.savez().
         """
         group = f"{filename}{filesuffix}"
-        arrays, meta = transcoder.convert_pickles_to_npz(var, group)
+        arrays, meta = transcoder.encode_npz(var, group)
         fp = self.get_store_filepath(filename, filesuffix=filesuffix)
         mkdir(os.path.dirname(fp))
         # Write beside the target and move it into place, so that an

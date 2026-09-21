@@ -127,7 +127,7 @@ class TestNpzCodec:
             "missing": None,
         }
 
-        arrays, meta = transcoder.convert_pickles_to_npz(data, "inversion_input")
+        arrays, meta = transcoder.encode_npz(data, "inversion_input")
         back = transcoder.decode_npz(arrays, meta, "inversion_input")
 
         assert set(back) == set(data)
@@ -147,7 +147,7 @@ class TestNpzCodec:
             "np_bool": np.bool_(False),
         }
 
-        arrays, meta = transcoder.convert_pickles_to_npz(data)
+        arrays, meta = transcoder.encode_npz(data)
         back = transcoder.decode_npz(arrays, meta)
 
         for key, expected in data.items():
@@ -161,7 +161,7 @@ class TestNpzCodec:
             {"width": np.zeros(3), "shape": (4, 5)},
         ]
 
-        arrays, meta = transcoder.convert_pickles_to_npz(data, "inversion_output")
+        arrays, meta = transcoder.encode_npz(data, "inversion_output")
         back = transcoder.decode_npz(arrays, meta, "inversion_output")
 
         assert isinstance(back, list) and len(back) == 2
@@ -176,7 +176,7 @@ class TestNpzCodec:
             "orig_head": shpg.Point(3, 4),
         }
 
-        arrays, meta = transcoder.convert_pickles_to_npz(data, "downstream_line")
+        arrays, meta = transcoder.encode_npz(data, "downstream_line")
         back = transcoder.decode_npz(arrays, meta, "downstream_line")
 
         assert back["downstream_line"].equals(data["downstream_line"])
@@ -195,7 +195,7 @@ class TestNpzCodec:
         )
         data = {"polygon_hr": poly, "polygon_pix": multi}
 
-        arrays, meta = transcoder.convert_pickles_to_npz(data, "geometries")
+        arrays, meta = transcoder.encode_npz(data, "geometries")
         back = transcoder.decode_npz(arrays, meta, "geometries")
 
         assert back["polygon_hr"].equals(poly)
@@ -211,7 +211,7 @@ class TestNpzCodec:
         ]
         data = {"catchment_indices": indices}
 
-        arrays, meta = transcoder.convert_pickles_to_npz(data, "geometries")
+        arrays, meta = transcoder.encode_npz(data, "geometries")
         back = transcoder.decode_npz(arrays, meta, "geometries")
 
         assert len(arrays) <= 4, "ragged lists must be packed into few entries"
@@ -229,7 +229,7 @@ class TestNpzCodec:
         ]
         data = {"geometrical_widths": widths}
 
-        arrays, meta = transcoder.convert_pickles_to_npz(data, "centerlines")
+        arrays, meta = transcoder.encode_npz(data, "centerlines")
         back = transcoder.decode_npz(arrays, meta, "centerlines")
 
         got = back["geometrical_widths"]
@@ -246,7 +246,7 @@ class TestNpzCodec:
         ] * tributary.nx
         tributary.set_flows_to(trunk)
 
-        arrays, meta = transcoder.convert_pickles_to_npz(
+        arrays, meta = transcoder.encode_npz(
             [tributary, trunk], "inversion_flowlines"
         )
         back = transcoder.decode_npz(arrays, meta, "inversion_flowlines")
@@ -276,9 +276,7 @@ class TestNpzCodec:
         """Every Flowline subclass comes back as itself, geometry intact."""
         flowline = factory()
 
-        arrays, meta = transcoder.convert_pickles_to_npz(
-            [flowline], "model_flowlines"
-        )
+        arrays, meta = transcoder.encode_npz([flowline], "model_flowlines")
         back = transcoder.decode_npz(arrays, meta, "model_flowlines")
 
         assert len(back) == 1
@@ -304,9 +302,7 @@ class TestNpzCodec:
         flowline = _make_parabolic_flowline()
         flowline.map_trafo = partial(grid.ij_to_crs, crs=salem.wgs84)
 
-        arrays, meta = transcoder.convert_pickles_to_npz(
-            [flowline], "model_flowlines"
-        )
+        arrays, meta = transcoder.encode_npz([flowline], "model_flowlines")
         back = transcoder.decode_npz(arrays, meta, "model_flowlines")[0]
 
         assert callable(back.map_trafo)

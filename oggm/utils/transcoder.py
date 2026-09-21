@@ -731,7 +731,7 @@ def decode_node(node: dict, arrays: dict) -> Any:
     raise ValueError(f"Unknown node type {kind!r}.")
 
 
-def convert_pickles_to_npz(data: Any, name: str = "") -> tuple[dict, dict]:
+def encode_npz(data: Any, name: str = "") -> tuple[dict, dict]:
     """Convert data destined for a pickle into npz contents.
 
     Parameters
@@ -755,7 +755,7 @@ def convert_pickles_to_npz(data: Any, name: str = "") -> tuple[dict, dict]:
 def decode_npz(arrays: dict, meta: dict, name: str = "") -> Any:
     """Reconstruct data from npz contents.
 
-    Inverse of :func:`convert_pickles_to_npz`.
+    Inverse of :func:`encode_npz`.
 
     Parameters
     ----------
@@ -764,7 +764,7 @@ def decode_npz(arrays: dict, meta: dict, name: str = "") -> Any:
     meta : dict
         Metadata describing the arrays.
     name : str, optional
-        Name of the store group. See :func:`convert_pickles_to_npz`.
+        Name of the store group. See :func:`encode_npz`.
 
     Returns
     -------
