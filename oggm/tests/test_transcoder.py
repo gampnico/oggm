@@ -390,8 +390,26 @@ class TestCodecDispatch:
         node = transcoder.encode_node([_make_centerline()], "p", {})
         assert node["t"] == "centerline_list"
 
-        with pytest.raises(TypeError, match="Centerline"):
+        with pytest.raises(TypeError, match="Centerlines, pass a list"):
             transcoder.encode_node((_make_centerline(),), "p", {})
+
+        widths = (shpg.MultiLineString([[(0, 0), (1, 1)]]),)
+        with pytest.raises(TypeError, match="MultiLineStrings, pass a list"):
+            transcoder.encode_node(widths, "p", {})
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            np.complex128(1j),
+            np.datetime64("2020-01-01"),
+            np.timedelta64(1, "D"),
+            np.datetime64("2020-01-01T00:00", "ns"),
+        ],
+    )
+    def test_npscalar_rejects_non_json_values(self, value):
+        """The codec, not json.dumps, must reject unstorable numpy scalars."""
+        with pytest.raises(TypeError, match="numpy scalar of dtype"):
+            transcoder.encode_node(value, "p", {})
 
     def test_encode_node_special_cases(self):
 

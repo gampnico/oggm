@@ -563,8 +563,18 @@ def _encode_array(obj: np.ndarray, path: str, arrays: dict) -> dict:
 
 
 def _encode_npscalar(obj: np.generic, path: str, arrays: dict) -> dict:
-    """Encode a numpy scalar, keeping its dtype."""
-    return {"t": "npscalar", "dtype": obj.dtype.str, "v": obj.item()}
+    """Encode a numpy scalar, keeping its dtype.
+
+    Raises a TypeError here rather than in ``json.dumps`` when
+    ``obj.item()`` is not a JSON scalar, e.g. for complex values. and for
+    datetime64 and timedelta64 because at ``ns`` their item is an int
+    which can't be decoded without its unit.
+    """
+    value = obj.item()
+    if obj.dtype.kind in "mM" or not isinstance(value, (bool, int, float, str)):
+        raise TypeError(f"Cannot encode a numpy scalar of dtype {obj.dtype}.")
+
+    return {"t": "npscalar", "dtype": obj.dtype.str, "v": value}
 
 
 def _encode_scalar(obj: Any, path: str, arrays: dict) -> dict:
@@ -589,7 +599,9 @@ def _encode_point(obj: Any, path: str, arrays: dict) -> dict:
 def _encode_dict(obj: dict, path: str, arrays: dict) -> dict:
     """Encode a dict, recursing into each value.
 
-    Keys must be strings, since the node is written out as JSON.
+    Keys must be strings, since the node is written out as JSON. On a
+    bad key, `arrays` may already hold the earlier values' arrays, so
+    callers must discard it when this raises.
     """
     items = {}
     for key, value in obj.items():
@@ -602,6 +614,15 @@ def _encode_dict(obj: dict, path: str, arrays: dict) -> dict:
 
 def _encode_sequence(obj: Any, path: str, arrays: dict) -> dict:
     """Encode a list or a tuple, recursing into each item."""
+    # Only lists take the specialised list codecs, and the bare items
+    # have no codec of their own, so point at the fix.
+    if isinstance(obj, tuple) and (
+        _is_centerline_list(obj) or _is_multilinestring_list(obj)
+    ):
+        raise TypeError(
+            f"Cannot encode a tuple of {type(obj[0]).__name__}s, "
+            "pass a list instead."
+        )
     items = [
         encode_node(item, _join_path(path, str(i)), arrays)
         for i, item in enumerate(obj)
