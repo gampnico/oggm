@@ -1,16 +1,19 @@
-import os
 import datetime
+import os
 import warnings
 from functools import partial
+from pathlib import Path
 
-import pytest
+import numpy as np
 import pyproj
+import pytest
 import shapely
 import shapely.geometry as shpg
-import numpy as np
 from numpy.testing import assert_allclose
+
 from oggm import Centerline
 from oggm.core.flowline import Flowline
+from oggm.utils._compat import convert_pickles_to_npz
 
 salem = pytest.importorskip("salem")
 
@@ -593,3 +596,36 @@ class TestStoreFallback:
             {"flux": np.ones(2)}, "inversion_input", filesuffix="_probe"
         )
         assert gdir.has_file("inversion_input", filesuffix="_probe")
+
+
+class TestCompatibility:
+    """The npz store must be compatible with the pickles it replaces."""
+
+    @pytest.mark.parametrize("arg_delete", [True, False])
+    def test_convert_pickles_to_npz(self, tmp_path, hef_gdir, arg_delete):
+        """A glacier directory's pickles are rewritten into npz."""
+        cfg.initialize()
+        cfg.PATHS["working_dir"] = str(tmp_path)
+        gdir = hef_gdir
+
+        # Write a pickle and a store group
+        gdir.write_pickle(np.ones(2), "inversion_input", filesuffix="_convert")
+        assert gdir.has_file("inversion_input", filesuffix="_convert")
+        gdir.write_store(
+            {"flux": np.ones(2)}, "inversion_input", filesuffix="_control"
+        )
+        assert gdir.has_file("inversion_input", filesuffix="_control")
+
+        convert_pickles_to_npz(gdir, delete=arg_delete)
+
+        assert gdir.has_file("inversion_input", filesuffix="_control")
+        assert gdir.has_file("inversion_input", filesuffix="_convert")
+
+        pickle_path = Path(gdir.dir) / "inversion_input_convert.pkl"
+        assert not pickle_path.exists() if arg_delete else pickle_path.exists()
+
+        back = gdir.read_store("inversion_input", filesuffix="_control")
+        np.testing.assert_array_equal(back["flux"], np.ones(2))
+
+        back = gdir.read_store("inversion_input", filesuffix="_convert")
+        np.testing.assert_array_equal(back, np.ones(2))
