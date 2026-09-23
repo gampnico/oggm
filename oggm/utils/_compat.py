@@ -1,5 +1,5 @@
-"""Compatibility and conversion wrappers between cumulative and
-incremental prepro systems.
+"""Compatibility and conversion wrappers between legacy and new glacier
+directory formats.
 
 The main entry point is :func:`convert_prepro_to_deltas`, which converts
 the previous cumulative per-level tar artifacts (each level tar
@@ -18,16 +18,13 @@ than a URL.
 import glob
 import logging
 import os
+from pathlib import Path
 
 from oggm import cfg
 from oggm.exceptions import InvalidParamsError
-from oggm.utils._workflow import (
-    base_dir_to_tar,
-    dataset_id_from_tag,
-    gdir_to_tar,
-    snapshot_gdir_state,
-    write_level_manifest,
-)
+from oggm.utils._workflow import (base_dir_to_tar, dataset_id_from_tag,
+                                  gdir_to_tar, snapshot_gdir_state,
+                                  write_level_manifest)
 
 log = logging.getLogger(__name__)
 
@@ -35,40 +32,47 @@ log = logging.getLogger(__name__)
 # means the two trees were generated from different inputs.
 _TREE_INVARIANTS = ("dem.tif", "glacier_grid.json", "dem_source.txt")
 
+def convert_pickles_to_npz(gdir, delete: bool = True):
+    """Rewrite a glacier directory's pickles into npz.
 
-def _convert_pickles_to_zarr(gdir):
-    """Rewrite a glacier directory's pickles into the zarr data store.
-
-    One-way (not reversible): every ``.pkl`` that ``write_store`` can turn
-    into a ``data_store.zarr/<group>`` is deleted afterwards, so the
-    directory holds the same information in zarr form only. Suffixed
-    variants (e.g. ``model_flowlines_dyn_melt_f_calib.pkl``) are handled by
-    globbing each pickle BASENAME stem. Any pickle that ``write_store``
-    cannot convert (it falls back to pickle) keeps its ``.pkl``, so no data
-    is ever lost.
+    One-way (not reversible): every pickle that ``write_store`` can turn
+    into a ``data_store/<data>.npz`` is deleted afterwards, so the
+    directory holds the same information in npz form only.
+    Suffixed variants (e.g. ``model_flowlines_dyn_melt_f_calib.pkl``)
+    are handled by globbing each pickle BASENAME stem. Any pickle that
+    ``write_store`` cannot convert (it falls back to pickle) keeps its
+    ``.pkl``, so no data is ever lost.
 
     Parameters
     ----------
     gdir : GlacierDirectory
         The glacier directory to convert in place.
+    delete : bool, default True
+        If True (recommended), delete the original pickles after
+        conversion. If False, keep them around for comparison. This is
+        irreversible, the directory will hold the same information in
+        npz form only.
     """
     pkl_basenames = [
         k
         for k, v in cfg.BASENAMES.items()
         if isinstance(v, str) and v.endswith(".pkl")
     ]
-    store_dir = os.path.join(gdir.dir, "data_store.zarr")
+
+    store_dir = Path(gdir.dir) / "data_store"
     for base in pkl_basenames:
         stem = cfg.BASENAMES[base][:-4]
-        for fp in glob.glob(os.path.join(gdir.dir, f"{stem}*.pkl")):
+        # we want all possible pickles
+        for fp in glob.glob(os.path.join(Path(gdir.dir), f"{stem}*.pkl")):
             suffix = os.path.basename(fp)[len(stem) : -4]
             data = gdir.read_pickle(base, filesuffix=suffix)
             gdir.write_store(data, base, filesuffix=suffix)
-            if os.path.isdir(os.path.join(store_dir, f"{base}{suffix}")):
-                # zarr write succeeded; drop the now-redundant pickle
+            npz_fp = store_dir / f"{base}{suffix}.npz"
+            if os.path.isfile(npz_fp) and delete:
+                # npz write succeeded, drop the now-redundant pickle
                 os.remove(fp)
-            # else write_store fell back to pickle: leave the .pkl in place
-
+            else:
+                pass  # fell back to pickle so leave .pkl in place
 
 def convert_prepro_to_deltas(
     rgi_ids: list[str],

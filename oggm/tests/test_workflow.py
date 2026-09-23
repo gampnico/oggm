@@ -380,8 +380,10 @@ class TestFullRun(unittest.TestCase):
         utils.mkdir(base_dir, reset=True)
         gdirs = workflow.execute_entity_task(utils.copy_to_basedir, gdirs,
                                              base_dir=base_dir, setup='all')
-        path_centerline = gdirs[0].get_filepath('centerlines')
-        for path in [path_centerline,path_centerline.replace(".pkl", ".zarr")]:
+        for path in [
+            gdirs[0].get_filepath('centerlines'),
+            gdirs[0].get_store_filepath('centerlines'),
+        ]:
             if os.path.exists(path):
                 os.remove(path)
         cfg.PARAMS['continue_on_error'] = True
@@ -1120,8 +1122,8 @@ class TestGdirObservations:
         assert 'You have not provided an reference' in str(exc_info.value)
 
 
-class TestZarrWorkflow:
-    """Tests for any Zarr operations called via workflow or _workflow."""
+class TestStoreWorkflow:
+    """Tests for the npz data store as used through the workflow."""
 
     @pytest.mark.skip(reason="warning disabled for performance")
     def test_pickle_warnings(self, hef_gdir):
@@ -1138,95 +1140,77 @@ class TestZarrWorkflow:
                 filesuffix="test_pickle",
             )
 
-    @pytest.mark.skip
     @pytest.mark.parametrize("arg_filesuffix", ["", "_exp01"])
-    def test_write_zarr(tmp_path, hef_gdir, arg_filesuffix):
-        """Create a zarr store at the expected path."""
+    def test_write_npz(self, tmp_path, hef_gdir, arg_filesuffix):
+        """Create an npz store group at the expected path."""
         cfg.initialize()
         cfg.PATHS["working_dir"] = str(tmp_path)
         gdir = hef_gdir
 
-        ds = xr.Dataset(
-            {
-                "temperature": xr.DataArray(
-                    np.array([1.0, 2.0, 3.0]), dims=["time"]
-                )
-            }
-        )
-        data_tree = xr.DataTree(dataset=ds)
-
-        gdir.write_zarr(
-            data_tree=data_tree,
-            filename="data_store",
+        gdir.write_npz(
+            {"temperature": np.array([1.0, 2.0, 3.0])},
+            filename="inversion_input",
             filesuffix=arg_filesuffix,
         )
 
-        fp = gdir.get_filepath(filename="data_store", filesuffix=arg_filesuffix)
-        assert os.path.exists(fp)
-
-        with xr.open_zarr(fp, consolidated=True) as ds_read:
-            np.testing.assert_array_equal(
-                ds_read["temperature"].values, [1.0, 2.0, 3.0]
-            )
-
-        # Test that overwrite=True replaces existing zarr content
-
-        ds_new = xr.Dataset(
-            {"val": xr.DataArray(np.array([9.0, 8.0]), dims=["n"])}
+        fp = gdir.get_store_filepath(
+            "inversion_input", filesuffix=arg_filesuffix
         )
-        gdir.write_zarr(
-            xr.DataTree(dataset=ds_new), "data_store", overwrite=True
+        assert os.path.isfile(fp)
+        assert os.path.dirname(fp) == os.path.join(gdir.dir, "data_store")
+
+        back = gdir.read_npz("inversion_input", filesuffix=arg_filesuffix)
+        np.testing.assert_array_equal(back["temperature"], [1.0, 2.0, 3.0])
+
+        # second write replaces group rather than appending to it
+        gdir.write_npz(
+            {"val": np.array([9.0, 8.0])},
+            filename="inversion_input",
+            filesuffix=arg_filesuffix,
         )
+        back = gdir.read_npz("inversion_input", filesuffix=arg_filesuffix)
+        assert set(back) == {"val"}
+        np.testing.assert_array_equal(back["val"], [9.0, 8.0])
 
-        fp = gdir.get_filepath("data_store")
-        with xr.open_zarr(fp, consolidated=True) as ds_read:
-            np.testing.assert_array_equal(ds_read["val"].values, [9.0, 8.0])
-
-    # @pytest.mark.xfail(reason="zarr is not yet in oggm-sample-data")
     def test_read_store(self, tmp_path, hef_gdir):
-        """Test that read_store returns xr.DataTree when zarr store exists."""
+        """Test that read_store reads back what write_store wrote."""
         cfg.initialize()
         cfg.PATHS["working_dir"] = str(tmp_path)
         gdir = hef_gdir
 
-        ds = xr.Dataset(
-            {"flux": xr.DataArray(np.array([1.0, 2.0, 3.0]), dims=["time"])}
+        gdir.write_store(
+            [{"flux": np.array([1.0, 2.0, 3.0])}],
+            filename="inversion_input",
+            filesuffix="_test",
         )
-        data_tree = xr.DataTree()
-        data_tree["inversion_input_test"] = xr.DataTree.from_dict(
-            name="inversion_input_test", data=ds
-        )
-        # until this is included via oggm-sample-data
-        gdir.write_zarr(data_tree=data_tree, filename="data_store", overwrite=False)
         result = gdir.read_store(filename="inversion_input", filesuffix="_test")
 
         assert isinstance(result, list)
         assert isinstance(result[0], dict)
 
-        # This will fail if it reads the pickle instead of the zarr
+        # This will fail if it reads a pickle instead of the store
         np.testing.assert_array_equal(result[0]["flux"], [1.0, 2.0, 3.0])
 
     def test_read_store_fallback(self, hef_gdir):
-        """Test read_store falls back to read_pickle if zarr is not found."""
+        """Test read_store falls back to read_pickle if npz is not found."""
         from oggm.utils import _workflow
 
         gdir = hef_gdir
-        # Force use of pickle or this test will never pass once switched to zarr
+        # Force use of pickle, or this test can never fail
         gdir.write_pickle(
             var=[1, 2, 3],
             filename="inversion_flowlines",
             filesuffix="test_pickle",
         )
-        # reset so test observes the first warning
-        _workflow._warn_zarr_fallback.cache_clear()
+        # reset so test observes first warning
+        _workflow._warn_store_fallback.cache_clear()
         with pytest.warns(
             Warning,
-            match="Zarr data not found, attempting to read pickle file instead.",
+            match="Store data not found, attempting to read pickle file instead.",
         ):
             ds_read = gdir.read_store(
                 filename="inversion_flowlines", filesuffix="test_pickle"
             )
-        assert not isinstance(ds_read, xr.DataTree)
         assert isinstance(ds_read, list)
 
         # warn-once behaviour
@@ -1236,50 +1220,6 @@ class TestZarrWorkflow:
                 filename="inversion_flowlines", filesuffix="test_pickle"
             )
         assert not any(
-            "Zarr data not found" in str(r.message) for r in records
+            "Store data not found" in str(r.message) for r in records
         )
         assert isinstance(ds_read, list)
-
-    def test_validate_store(self, hef_gdir):
-        gdir = hef_gdir
-
-        ds = xr.Dataset(
-            {"flux": xr.DataArray(np.array([100.0, 200.0, 300.0]), dims=["x"])}
-        )
-        data_tree = xr.DataTree(dataset=ds, name="inversion_input")
-
-        result = gdir._validate_store(data_tree=data_tree)
-
-        assert isinstance(result, list)
-        assert isinstance(result[0], dict)
-        np.testing.assert_array_equal(result[0]["flux"], [100.0, 200.0, 300.0])
-
-    def test_validate_store_logic(self, hef_gdir):
-        """Test that _validate_store modifies the data_tree as expected."""
-        gdir = hef_gdir
-        downstream_line = gdir.read_store("downstream_line")["downstream_line"]
-        assert isinstance(downstream_line, shapely.LineString)
-
-        # Create a DataTree with a downstream_line variable
-        data_tree = xr.DataTree()
-        ds = xr.Dataset(
-            {
-                "downstream_line": xr.DataArray(
-                    np.array(
-                        shapely.geometry.mapping(downstream_line)["coordinates"]
-                    ),
-                    dims=["x", "y"],
-                )
-            }
-        )
-        data_tree = xr.DataTree(dataset=ds, name="downstream_line")
-        assert data_tree.name == "downstream_line"
-
-        result = gdir._validate_store(data_tree=data_tree)
-
-        assert isinstance(result, dict)
-        assert "downstream_line" in result.keys()
-        assert isinstance(result["downstream_line"], shapely.LineString)
-        assert shapely.LineString(result["downstream_line"]).equals(
-            downstream_line
-        )
