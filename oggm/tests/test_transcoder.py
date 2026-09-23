@@ -48,6 +48,19 @@ def _make_centerline(n=5):
     return cl
 
 
+def _make_junction_pair():
+    """Create a tributary joining a twelve-vertex trunk at vertex one.
+
+    The junction sits inside the band that ``check_tail=True`` clips,
+    as ``compute_centerlines`` allows with ``check_tail=False``.
+    """
+    trunk = _make_centerline(12)
+    tributary = _make_centerline(3)
+    tributary.set_line(shpg.LineString([(1, 2), (1, 1), (1, 0)]))
+    tributary.set_flows_to(trunk, check_tail=False)
+    return tributary, trunk
+
+
 def _make_mixed_bed_flowline(n=5):
     """Create a minimal MixedBedFlowline."""
     from oggm.core.flowline import MixedBedFlowline
@@ -265,6 +278,38 @@ class TestNpzCodec:
         assert back[0].orig_head.equals(tributary.orig_head)
         assert back[0].line.equals(tributary.line)
         assert len(back[0].geometrical_widths) == tributary.nx
+
+    def test_flows_to_point_survives_a_round_trip(self):
+        """A junction near the trunk's head must not move on a round trip."""
+        tributary, trunk = _make_junction_pair()
+        expected_point = tributary.flows_to_point
+        expected_indice = tributary.flows_to_indice
+        assert expected_indice == 1
+
+        arrays, meta = transcoder.encode_npz([tributary, trunk], "centerlines")
+        back = transcoder.decode_npz(arrays, meta, "centerlines")
+
+        assert back[0].flows_to is back[1]
+        assert back[0].flows_to_point.equals(expected_point)
+        assert back[0].flows_to_indice == expected_indice
+        assert back[1].inflow_points[0].equals(expected_point)
+        assert back[1].inflows == [back[0]]
+
+    def test_flows_to_point_falls_back_without_the_key(self):
+        """Groups written before flows_to_point was stored still decode."""
+        tributary, trunk = _make_junction_pair()
+        arrays, meta = transcoder.encode_npz([tributary, trunk], "centerlines")
+        for item in meta["root"]["items"]:
+            item.pop("flows_to_point", None)
+
+        back = transcoder.decode_npz(arrays, meta, "centerlines")
+
+        # The fallback recomputes the junction with check_tail=True,
+        # which clips it into [4, n-5].
+        assert back[0].flows_to is back[1]
+        assert back[0].flows_to_point.equals(shpg.Point(4, 0))
+        assert back[0].flows_to_indice == 4
+        assert back[1].inflows == [back[0]]
 
     @pytest.mark.parametrize(
         "factory,cls_name",
@@ -498,6 +543,28 @@ class TestStoreRoundTrip:
 
         assert os.path.isfile(gdir.get_store_filepath(name, "_npz"))
         assert_store_equal(back, expected, name)
+
+    def test_centerline_junctions_match_the_pickle(self, tmp_path, hef_gdir):
+        """HEF's centerline junctions must match what the pickle held."""
+        cfg.initialize()
+        cfg.PATHS["working_dir"] = str(tmp_path)
+        gdir = hef_gdir
+        original = gdir.read_store("centerlines")
+
+        gdir.write_store(original, "centerlines", filesuffix="_npz")
+        gdir.write_pickle(original, "centerlines", filesuffix="_pkl")
+        back = gdir.read_store("centerlines", filesuffix="_npz")
+        expected = gdir.read_pickle("centerlines", filesuffix="_pkl")
+
+        assert any(cl.flows_to is not None for cl in expected)
+        for got, want in zip(back, expected):
+            if want.flows_to is None:
+                assert got.flows_to is None
+                continue
+            assert got.flows_to_point.equals(want.flows_to_point)
+            assert got.flows_to_indice == want.flows_to_indice
+            assert len(got.inflows) == len(want.inflows)
+            assert got.inflow_indices == want.inflow_indices
 
 
 class TestStoreFallback:

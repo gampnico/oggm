@@ -12,7 +12,7 @@ import numpy as np
 import shapely
 from salem import Grid, wgs84
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 def get_store_paths(directory: str | Path, pickle: bool = False) -> list[Path]:
@@ -166,8 +166,11 @@ def _get_bed_parameter(flowline, name: str):
     Any
         The value to store for `name`.
     """
-    from oggm.core.flowline import (MixedBedFlowline, RectangularBedFlowline,
-                                    TrapezoidalBedFlowline)
+    from oggm.core.flowline import (
+        MixedBedFlowline,
+        RectangularBedFlowline,
+        TrapezoidalBedFlowline,
+    )
 
     if name == "lambdas":
         if isinstance(flowline, MixedBedFlowline):
@@ -247,6 +250,12 @@ def encode_centerline_list(obj: list, path: str, arrays: dict) -> dict:
         if map_trafo is not None:
             # A partial cannot be serialised, so store the grid it binds.
             node["grid"] = get_grid_params_from_partial(map_trafo)
+        # Store, as junction depends on the flags passed
+        node["flows_to_point"] = encode_node(
+            getattr(item, "flows_to_point", None),
+            _join_path(item_path, "flows_to_point"),
+            arrays,
+        )
         items.append(node)
 
     return {"t": "centerline_list", "items": items}
@@ -319,8 +328,22 @@ def decode_centerline_list(node: dict, arrays: dict) -> list:
 
     for line, item in zip(lines, node["items"]):
         index = item["flows_to"]
-        if 0 <= index < len(lines):
-            line.set_flows_to(lines[index])
+        if not 0 <= index < len(lines):
+            continue
+        other = lines[index]
+        point = (
+            decode_node(item["flows_to_point"], arrays)
+            if "flows_to_point" in item
+            else None
+        )
+        if point is None:
+            # Written before flows_to_point was stored: recompute it.
+            line.set_flows_to(other)
+            continue
+        line.flows_to = other
+        line.flows_to_point = point
+        other.inflow_points.append(point)
+        other.inflows.append(line)
 
     return lines
 
