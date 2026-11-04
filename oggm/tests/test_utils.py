@@ -25,7 +25,7 @@ from oggm import utils, workflow, tasks, global_tasks
 from oggm.utils import _downloads
 from oggm import cfg
 from oggm.cfg import SEC_IN_YEAR
-from oggm.utils._workflow import compile_to_netcdf
+from oggm.utils._workflow import compile_to_netcdf, _write_shape_to_disk
 from oggm.tests import TEMP_BIAS_FILE_W5E5_RGI6, GEODETIC_MB_REGIONAL_AVG
 from oggm.tests.funcs import (get_test_dir, init_hef, TempEnvironmentVariable,
                               characs_apply_func)
@@ -5254,3 +5254,21 @@ class TestShapefileTar:
             exts = {os.path.splitext(n)[1] for n in tf.getnames()}
         assert exts <= {'.shp', '.shx', '.dbf', '.prj', '.cpg', '.properties'}
         assert '.shp' in exts
+
+    @pytest.mark.parametrize("use_compression", [True, False])
+    def test_rewrite_reads_new_content(self, tmp_path, use_compression):
+        """A tarred shapefile rewritten in the same process reads as new."""
+        cfg.initialize()
+        gdf = gpd.read_file(utils.get_demo_file("01_rgi60_Columbia.shp"))
+        shp = str(tmp_path / "outlines.shp")
+        params = {
+            "use_tar_shapefiles": True,
+            "use_compression": use_compression,
+        }
+        with mock.patch.dict(cfg.PARAMS, params):
+            _write_shape_to_disk(gdf, shp, to_tar=True)
+            oggm.GlacierDirectory._read_shapefile_from_path(shp)
+            _write_shape_to_disk(gdf.to_crs("EPSG:3338"), shp, to_tar=True)
+            out = oggm.GlacierDirectory._read_shapefile_from_path(shp)
+        assert len(out) == 1
+        assert out.crs.to_epsg() == 3338

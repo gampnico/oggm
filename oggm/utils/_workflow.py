@@ -4550,19 +4550,17 @@ class GlacierDirectory(object):
             raise ValueError('File ending not that of a shapefile')
 
         if cfg.PARAMS['use_tar_shapefiles']:
-            fp = 'tar://' + fp.replace('.shp', '.tar')
+            tp = fp.replace('.shp', '.tar')
             if cfg.PARAMS['use_compression']:
-                fp += '.gz'
+                tp += '.gz'
+            # GDAL's /vsigzip/ caches by path, so a .tar.gz rewritten in the
+            # same process reads back with stale offsets. Extract instead.
+            with tempfile.TemporaryDirectory() as td:
+                with tarfile.open(tp) as tf:
+                    tf.extractall(td, filter='data')
+                return gpd.read_file(os.path.join(td, os.path.basename(fp)))
 
-        shp = gpd.read_file(fp)
-
-        # .properties file is created for compressed shapefiles. github: #904
-        _properties = fp.replace('tar://', '') + '.properties'
-        if os.path.isfile(_properties):
-            # remove it, to keep GDir slim
-            os.remove(_properties)
-
-        return shp
+        return gpd.read_file(fp)
 
     def read_shapefile(self, filename, filesuffix=''):
         """Reads a shapefile located in the directory.
