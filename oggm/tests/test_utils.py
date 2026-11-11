@@ -6,7 +6,6 @@ import shutil
 import subprocess
 import sys
 import time
-import hashlib
 import tarfile
 import platform
 import pytest
@@ -30,9 +29,7 @@ from oggm.tests.funcs import (TempEnvironmentVariable,
                               characs_apply_func, init_columbia,
                               init_columbia_eb)
 from oggm.utils import shape_factor_adhikari
-from oggm.exceptions import (InvalidParamsError, InvalidDEMError,
-                             InvalidWorkflowError,
-                             DownloadVerificationFailedException)
+from oggm.exceptions import InvalidParamsError, InvalidWorkflowError
 from oggm.core import flowline
 
 salem = pytest.importorskip('salem')
@@ -80,7 +77,7 @@ def _task_with_cheap_return(gdir):
     return gdir.rgi_id
 
 
-class TestFuncs(object):
+class TestFuncs:
 
     def test_show_versions(self):
         # just see that it runs
@@ -375,8 +372,12 @@ class TestFuncs(object):
 
     def test_get_time_functions(self):
         """Test scalar and array behavior of get_{days,seconds}_of_{year,month}."""
-        from oggm.utils._funcs import (get_days_of_year, get_seconds_of_year,
-                                       get_days_of_month, get_seconds_of_month)
+        from oggm.utils._funcs import (
+            get_days_of_month,
+            get_days_of_year,
+            get_seconds_of_month,
+            get_seconds_of_year,
+        )
 
         # --- scalar input must return int ---
         # no-leap: always 365
@@ -770,7 +771,7 @@ class TestFuncs(object):
 
     def test_rgi_meta(self):
         cfg.initialize()
-        reg_names, subreg_names = utils.parse_rgi_meta(version='6')
+        reg_names, _subreg_names = utils.parse_rgi_meta(version='6')
         assert len(reg_names) == 20
         assert reg_names.loc[3].values[0] == 'Arctic Canada North'
 
@@ -870,7 +871,7 @@ class TestFuncs(object):
             assert not cfg.strtobool(value=value)
             assert not cfg.strtobool(value=value.upper())
 
-        for value in {"ft", None, 2, True, False}:
+        for value in ("ft", None, 2, True, False):
             with pytest.raises(ValueError):
                 cfg.strtobool(value=value)
 
@@ -1350,8 +1351,10 @@ class TestWorkflowTools:
         # model included). Collecting one per glacier is what made large
         # regions run out of memory, see
         # https://github.com/OGGM/oggm/issues/1976
-        from oggm.core.dynamic_spinup import (run_dynamic_spinup,
-                                              run_dynamic_melt_f_calibration)
+        from oggm.core.dynamic_spinup import (
+            run_dynamic_melt_f_calibration,
+            run_dynamic_spinup,
+        )
         for task in [flowline.flowline_model_run,
                      flowline.run_random_climate,
                      flowline.run_constant_climate,
@@ -2653,7 +2656,7 @@ class TestPreproCLI:
         # An empty chunk is a normal thing (the RGI ids have gaps) and has
         # to return quietly: on a cluster it is one task of an array job, and
         # an error would take the dependent jobs down with it.
-        empty = [i for i in range(n_chunks) if i not in chunks][0]
+        empty = next(i for i in range(n_chunks) if i not in chunks)
         run_prepro_levels(output_folder=os.path.join(self.testdir, 'empty'),
                           working_dir=wd('wd_empty'),
                           start_level='3', start_from_dir=out_dir,
@@ -3102,6 +3105,7 @@ class TestPreproCLI:
             rid = df.rgi_id.iloc[0]
             entity = rgidf.loc[rgidf.RGIId == rid].iloc[0]
 
+            # TODO: loop variables aren't bound by function definition
             def _lev_tars(*levels):
                 return [
                     os.path.join(
@@ -3317,8 +3321,14 @@ class TestPreproCLI:
 
         # Read in the RGI file
         inter, rgidf = _read_shp()
-        common = dict(rgi_version='61', rgi_reg='11', border=20,
-                      is_test=True, rgi_file=rgidf, intersects_file=inter)
+        common = {
+            "rgi_version": "61",
+            "rgi_reg": "11",
+            "border": 20,
+            "is_test": True,
+            "rgi_file": rgidf,
+            "intersects_file": inter,
+        }
 
         # Legacy (cumulative) directories can still be read, but new levels
         # can not be built on them
@@ -3434,7 +3444,7 @@ def _fake_glacier_statistics(grid_points, reg='11', dlon=0.5, dlat=0.5,
     rows = []
     for lon, lat, n in grid_points:
         for _ in range(n):
-            rows.append({'rgi_id': 'RGI60-{}.{:05d}'.format(reg, len(rows)),
+            rows.append({'rgi_id': f'RGI60-{reg}.{len(rows):05d}',
                          'rgi_region': reg,
                          'rgi_subregion': f'{reg}-01',
                          'cenlon': lon + rng.uniform(-dlon / 2, dlon / 2),
@@ -3514,7 +3524,9 @@ class TestTempBiasCLI:
             'except InvalidParamsError:\n'
             '    pass  # raised after the preset block, before cfg.initialize\n'
         )
-        out = subprocess.run([sys.executable, '-c', code], capture_output=True)
+        out = subprocess.run(
+            [sys.executable, "-c", code], capture_output=True, check=True
+        )
         assert out.returncode == 0, out.stderr.decode()
 
     def test_compute_temp_bias_dataframe(self):
@@ -3692,8 +3704,8 @@ class TestTempBiasCLI:
                          'glacier_statistics_11.csv']:
             assert expected in summary, expected
         # the headline numbers are the real ones
-        assert '{}'.format(int(out.n_glaciers.sum())) in summary
-        assert '{}'.format(len(out)) in summary
+        assert f'{int(out.n_glaciers.sum())}' in summary
+        assert f'{len(out)}' in summary
 
         # This is what OGGM does with the file: it must be readable and the
         # nearest grid point lookup must work (see mb_calibration_from_
@@ -3979,7 +3991,7 @@ def make_fake_zipdir(dir_path, fakefile=None, base_dir=None,
     return dir_path + extension
 
 
-class FakeDownloadManager():
+class FakeDownloadManager:
     """We mess around with oggm internals, so the last we can do is to try
     to keep things clean after the tests."""
 
@@ -4063,19 +4075,22 @@ class TestFakeDownloads:
         self.reset_dir()
         cache_dir = cfg.CACHE_DIR
         try:
-            cfg.CACHE_DIR = os.path.join(self.dldir, 'cache')
+            cfg.CACHE_DIR = os.path.join(self.dldir, "cache")
 
             def fake_down(dl_func, cache_path):
                 # This should never be called, if it still is assert
                 assert False
-            with FakeDownloadManager('_call_dl_func', fake_down):
-                with pytest.raises(utils.NoInternetException):
-                    tmp = cfg.PARAMS['has_internet']
-                    cfg.PARAMS['has_internet'] = False
-                    try:
-                        utils.download_oggm_files()
-                    finally:
-                        cfg.PARAMS['has_internet'] = tmp
+
+            with (
+                FakeDownloadManager("_call_dl_func", fake_down),
+                pytest.raises(utils.NoInternetException),
+            ):
+                tmp = cfg.PARAMS["has_internet"]
+                cfg.PARAMS["has_internet"] = False
+                try:
+                    utils.download_oggm_files()
+                finally:
+                    cfg.PARAMS["has_internet"] = tmp
         finally:
             cfg.CACHE_DIR = cache_dir
 
@@ -4188,8 +4203,8 @@ class TestFakeDownloads:
                 "srtm_39_03.tif",
                 [11.3, 11.3],
                 [47.1, 47.1],
-                "http://srtm.csi.cgiar.org/wp-content/uploads/files/"
-                "srtm_5x5/TIFF/srtm_39_03.zip",
+                ("http://srtm.csi.cgiar.org/wp-content/uploads/files/"
+                "srtm_5x5/TIFF/srtm_39_03.zip"),
             ),
             (
                 "NASADEM",
@@ -4198,8 +4213,8 @@ class TestFakeDownloads:
                 "n47e011.hgt",
                 [11.3, 11.3],
                 [47.1, 47.1],
-                "https://e4ftl01.cr.usgs.gov/MEASURES/NASADEM_HGT.001/"
-                "2000.02.11/NASADEM_HGT_n47e011.zip",
+                ("https://e4ftl01.cr.usgs.gov/MEASURES/NASADEM_HGT.001/"
+                "2000.02.11/NASADEM_HGT_n47e011.zip"),
             ),
             (
                 "ASTER",
@@ -4208,8 +4223,8 @@ class TestFakeDownloads:
                 "ASTGTMV003_S89W121_dem.tif",
                 [-120.2, -120.2],
                 [-88.1, -88.9],
-                "https://e4ftl01.cr.usgs.gov/ASTT/ASTGTM.003/"
-                "2000.03.01/ASTGTMV003_S89W121.zip",
+                ("https://e4ftl01.cr.usgs.gov/ASTT/ASTGTM.003/"
+                "2000.03.01/ASTGTMV003_S89W121.zip"),
             ),
             (
                 "TANDEM",
@@ -4218,8 +4233,8 @@ class TestFakeDownloads:
                 "TDM1_DEM__30_N60W146.tif",
                 [-145.2, -145.3],
                 [60.1, 60.9],
-                "https://download.geoservice.dlr.de/TDM90/files/DEM/"
-                "N60/W140/TDM1_DEM__30_N60W146.zip",
+                ("https://download.geoservice.dlr.de/TDM90/files/DEM/"
+                "N60/W140/TDM1_DEM__30_N60W146.zip"),
             ),
         ],
         ids=["srtm", "nasadem", "aster", "tandem"],
@@ -4254,9 +4269,9 @@ class TestFakeDownloads:
                 [-140.428, -140.428],
                 [60.177, 60.177],
                 {},
-                "https://cluster.klima.uni-bremen.de/~oggm/dem/"
+                ("https://cluster.klima.uni-bremen.de/~oggm/dem/"
                 "Alaska_albers_V3/008_004_Alaska_albers_V3/"
-                "008_004_Alaska_albers_V3.tif",
+                "008_004_Alaska_albers_V3.tif"),
             ),
         ],
         ids=["mapzen", "alaska"],
@@ -4493,9 +4508,8 @@ class TestDataFiles:
         # writing file to a gzip
         tmp_comp = os.path.join(cfg.PATHS['working_dir'], 'f.nc.gz')
         import gzip
-        with gzip.GzipFile(tmp_comp, 'w') as zip:
-            with open(tmp_file, 'rb') as f_in:
-                shutil.copyfileobj(f_in, zip)
+        with gzip.GzipFile(tmp_comp, "w") as zip, open(tmp_file, "rb") as f_in:
+            shutil.copyfileobj(f_in, zip)
         of = utils.file_extractor(tmp_comp)
         assert 'f.nc' in of
         assert os.path.isfile(of)
@@ -4748,8 +4762,8 @@ class TestDataFiles:
                 "COPDEM90",
                 [
                     (
-                        "https://opentopography.s3.sdsc.edu/raster/COP90/COP90_hh/"
-                        "Copernicus_DSM_30_S10_00_W078_00_DEM.tif",
+                        ("https://opentopography.s3.sdsc.edu/raster/COP90/COP90_hh/"
+                        "Copernicus_DSM_30_S10_00_W078_00_DEM.tif"),
                         "Copernicus_DSM_30_S10_00_W078_00_DEM",
                     )
                 ],
@@ -4760,8 +4774,8 @@ class TestDataFiles:
                 "COPDEM30",
                 [
                     (
-                        "https://opentopography.s3.sdsc.edu/raster/COP30/COP30_hh/"
-                        "Copernicus_DSM_10_S10_00_W078_00_DEM.tif",
+                        ("https://opentopography.s3.sdsc.edu/raster/COP30/COP30_hh/"
+                        "Copernicus_DSM_10_S10_00_W078_00_DEM.tif"),
                         "Copernicus_DSM_10_S10_00_W078_00_DEM",
                     )
                 ],
@@ -4772,13 +4786,13 @@ class TestDataFiles:
                 "COPDEM90",
                 [
                     (
-                        "https://opentopography.s3.sdsc.edu/raster/COP90/COP90_hh/"
-                        "Copernicus_DSM_30_N46_00_E007_00_DEM.tif",
+                        ("https://opentopography.s3.sdsc.edu/raster/COP90/COP90_hh/"
+                        "Copernicus_DSM_30_N46_00_E007_00_DEM.tif"),
                         "Copernicus_DSM_30_N46_00_E007_00_DEM",
                     ),
                     (
-                        "https://opentopography.s3.sdsc.edu/raster/COP90/COP90_hh/"
-                        "Copernicus_DSM_30_N46_00_E008_00_DEM.tif",
+                        ("https://opentopography.s3.sdsc.edu/raster/COP90/COP90_hh/"
+                        "Copernicus_DSM_30_N46_00_E008_00_DEM.tif"),
                         "Copernicus_DSM_30_N46_00_E008_00_DEM",
                     ),
                 ],
@@ -4789,13 +4803,13 @@ class TestDataFiles:
                 "COPDEM30",
                 [
                     (
-                        "https://opentopography.s3.sdsc.edu/raster/COP30/COP30_hh/"
-                        "Copernicus_DSM_10_N46_00_E007_00_DEM.tif",
+                        ("https://opentopography.s3.sdsc.edu/raster/COP30/COP30_hh/"
+                        "Copernicus_DSM_10_N46_00_E007_00_DEM.tif"),
                         "Copernicus_DSM_10_N46_00_E007_00_DEM",
                     ),
                     (
-                        "https://opentopography.s3.sdsc.edu/raster/COP30/COP30_hh/"
-                        "Copernicus_DSM_10_N46_00_E008_00_DEM.tif",
+                        ("https://opentopography.s3.sdsc.edu/raster/COP30/COP30_hh/"
+                        "Copernicus_DSM_10_N46_00_E008_00_DEM.tif"),
                         "Copernicus_DSM_10_N46_00_E008_00_DEM",
                     ),
                 ],
@@ -4857,7 +4871,7 @@ class TestDataFiles:
         foo = []
         bar = []
         for i, e in itertools.product(range(1, 4), ['foo', 'bar']):
-            f = os.path.join(self.dldir, 'f{}.{}'.format(i, e))
+            f = os.path.join(self.dldir, f'f{i}.{e}')
             open(f, 'a').close()
             (foo.append(f) if e == 'foo' else bar.append(f))
             time.sleep(0.1)
@@ -4867,12 +4881,12 @@ class TestDataFiles:
         # no maxsize specified: use default
         assert lru_foo1.maxsize == cfg.PARAMS['lru_maxsize']
         # all files should exist
-        assert all([os.path.exists(f) for f in foo])
+        assert all(os.path.exists(f) for f in foo)
 
         # init handler for dldir and ending bar
         cfg.get_lru_handler(self.dldir, maxsize=3, ending='.bar')
         # all files should exist
-        assert all([os.path.exists(b) for b in bar])
+        assert all(os.path.exists(b) for b in bar)
 
         # update foo handler, decreasing maxsize should delete first file
         lru_foo2 = cfg.get_lru_handler(self.dldir, maxsize=2, ending='.foo')
@@ -4891,7 +4905,7 @@ class TestDataFiles:
         assert lru_foo1.maxsize == 2
 
         # And bar files should not be affected by decreased cache size of foo
-        assert all([os.path.exists(b) for b in bar])
+        assert all(os.path.exists(b) for b in bar)
 
     # Zones that exist and are small enough to download
     @pytest.mark.parametrize(
@@ -5109,7 +5123,7 @@ class TestSkyIsFalling:
         proj_in = pyproj.Proj(srs, preserve_units=True)
 
         from salem.gis import transform_proj
-        lon, lat = transform_proj(proj_in, proj_out, -2235000, -2235000)
+        lon, _lat = transform_proj(proj_in, proj_out, -2235000, -2235000)
         np.testing.assert_allclose(lon, 70.75731, atol=1e-5)
 
 
